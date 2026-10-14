@@ -353,11 +353,19 @@ function npmNodeEntry(bin: string): string | null {
     if (!source.startsWith("#!/usr/bin/env pwsh\n") ||
       !source.includes("$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent\n")) return null;
     const targets = [...source.matchAll(/&\s+"(?:\$basedir\/)?node\$exe"\s+"\$basedir\/([^"\r\n]+)"\s+\$args\b/g)].map((m) => m[1]!);
-    if (!targets.length || new Set(targets).size !== 1 || /[$`]/.test(targets[0]!) || !/\.[cm]?js$/i.test(targets[0]!)) return null;
+    if (!targets.length || new Set(targets).size !== 1 || /[$`]/.test(targets[0]!)) return null;
     const entry = path.resolve(path.dirname(bin), targets[0]!);
     if (!fs.statSync(entry).isFile()) return null;
+    if (!/\.[cm]?js$/i.test(targets[0]!) && !entryIsNodeScript(entry)) return null;
     return entry;
   } catch { return null; }
+}
+
+/** 无扩展名入口必须以 node shebang 开头才允许经 node 执行。 */
+function entryIsNodeScript(entry: string): boolean {
+  try {
+    return fs.readFileSync(entry, "utf8").slice(0, 64).startsWith("#!/usr/bin/env node");
+  } catch { return false; }
 }
 
 export function executableInvocation(
@@ -835,10 +843,15 @@ export function parseCodeBuddyOutput(stdout: string): string {
     const value = item as { result?: unknown; response?: unknown; structured_output?: unknown; is_error?: unknown };
     if (value.is_error === true) throw new LocalAgentError("agent_failed", "CodeBuddy 本轮执行失败");
     if (value.structured_output !== undefined) return JSON.stringify(value.structured_output);
-    if (typeof value.result === "string" && value.result.trim()) return value.result;
-    if (typeof value.response === "string" && value.response.trim()) return value.response;
+    if (typeof value.result === "string" && value.result.trim()) return stripThinkTags(value.result);
+    if (typeof value.response === "string" && value.response.trim()) return stripThinkTags(value.response);
   }
   throw new LocalAgentError("agent_empty_output", "CodeBuddy 没有返回可见回答");
+}
+
+/** 个别模型会把推理痕迹（如 <think:opensource>…</think:opensource>）混进 result 文本；产品答案不允许携带。 */
+export function stripThinkTags(text: string): string {
+  return text.replace(/<think:[^>]*>[\s\S]*?<\/think:[^>]*>/g, "").replace(/<\/?think:[^>]*>/g, "").trim();
 }
 
 function failureMessage(agent: LocalAgentId, stdout: string, stderr: string, code: number | null): LocalAgentError {
@@ -994,10 +1007,26 @@ export async function runLocalAgent(agent: LocalAgentId, opts: RunLocalAgentOpti
       // 却无法证明整个进程组已经退出。两秒后杀整组，再等 close。
       hardKillTimer = setTimeout(() => {
         signalTree("SIGKILL");
-        killFallbackTimer = setTimeout(() => {
+        // Windows：taskkill /F 之后 stdio 管道收尾与子树退出可能超过 2 秒，
+        // 实测出现"进程树退出未确认"的假阴性（2026-10-13）。确认窗口放宽到 5 秒，
+        // 期间树仍活着就每秒补一次 KILL；确认成功或窗口耗尽才落定。
+        const confirmWindowMs = process.platform === "win32" ? 5_000 : 2_000;
+        const retryKillMs = process.platform === "win32" ? 1_000 : confirmWindowMs;
+        const hardKillAt = Date.now();
+        let lastKill = hardKillAt;
+        killFallbackTimer = setInterval(() => {
           const confirmed = closed && !processTreeAlive() && (process.platform !== "win32" || treeSignalled);
-          finish(() => reject(confirmed ? terminationError! : new LocalAgentError("agent_shutdown_failed", `${label} 进程树退出未确认，不能视为已取消`)));
-        }, 2_000);
+          if (confirmed || Date.now() - hardKillAt >= confirmWindowMs) {
+            const diagTail = `[diag] stdout: ${stdout.slice(-800)}\n[diag] stderr: ${stderr.slice(-800)}`;
+            console.error(diagTail);
+            finish(() => reject(confirmed ? terminationError! : new LocalAgentError("agent_shutdown_failed", `${label} 进程树退出未确认，不能视为已取消`)));
+            return;
+          }
+          if (process.platform === "win32" && Date.now() - lastKill >= retryKillMs) {
+            lastKill = Date.now();
+            signalTree("SIGKILL");
+          }
+        }, 250);
         // Do not let Node exit while this shutdown acknowledgement is pending.
       }, 2_000);
       // The detached child may close before its descendants; keep the bounded wait alive.
@@ -1050,7 +1079,7 @@ export async function runLocalAgent(agent: LocalAgentId, opts: RunLocalAgentOpti
           reject(classified.code === "agent_failed" ? error : classified);
         }
         });
-      }, () => finish(() => reject(new LocalAgentError("agent_shutdown_failed", `${label} 进程组退出未确认`))));
+      }, () => { console.error(`[diag] group-exit stdout: ${stdout.slice(-800)}\n[diag] stderr: ${stderr.slice(-800)}`); finish(() => reject(new LocalAgentError("agent_shutdown_failed", `${label} 进程组退出未确认`))); });
     });
     child.stdin.end(input, "utf8");
   }).catch((error) => { primaryError = error; throw error; }).finally(() => {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import os
 import threading
 from typing import Optional
 
@@ -17,6 +18,16 @@ _REF_STOCK = "sh600000"  # 浦发银行，流动性好、每个交易日都有�
 def _ref_dates(start: str, end: str) -> list[str]:
     """参考股在 [start, end] 区间内的真实交易日（升序，YYYY-MM-DD）。失败返回空表。"""
     try:
+        # 腾讯行情域名是国内直连源：绕过系统代理（加速器开启时 urlopen/akshare
+        # 都会被代理拒连，日历整条失效表现为 latest_session 返回 None）。
+        _existing = [h.strip()
+                     for v in (os.environ.get("no_proxy", ""), os.environ.get("NO_PROXY", ""))
+                     for h in v.split(",") if h.strip()]
+        _merged = ",".join(dict.fromkeys([*_existing, "qt.gtimg.cn", "web.ifzq.gtimg.cn",
+                                          ".gtimg.cn"]))
+        os.environ["NO_PROXY"] = _merged
+        os.environ["no_proxy"] = _merged
+
         import akshare as ak
 
         df = ak.stock_zh_a_hist_tx(
@@ -124,7 +135,9 @@ def quote_trade_day() -> Optional[str]:
         try:
             import urllib.request
 
-            raw = urllib.request.urlopen(_QUOTE_URL + _REF_STOCK, timeout=8).read().decode("gbk", "ignore")
+            # 国内行情源直连，绕过系统代理（加速器开启时误伤）
+            _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            raw = _opener.open(_QUOTE_URL + _REF_STOCK, timeout=8).read().decode("gbk", "ignore")
             f = raw.split("~")
             ts = f[_F_QUOTE_TIME].strip() if len(f) > _F_QUOTE_TIME else ""
             if len(ts) >= 8 and ts[:8].isdigit():

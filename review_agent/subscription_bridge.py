@@ -101,9 +101,13 @@ def invoke(runtime, run, source, prompt, system, cancel, progress, budget, *, to
     request = {'action':'run', 'model':source['model'], 'prompt':prompt,
                'system':system, 'timeout':budget}
     if tools:
+        # 与 codex 路径的 _mcp_child_env 同源：env_vars=[] 会剥掉全部父环境，
+        # 子进程 import 链上 Path.expanduser() 没有 USERPROFILE/HOME 直接崩，
+        # 引擎侧只看到 os error 231（管道忙），必须显式补系统变量。
+        from .runtime import _mcp_child_env
         request['mcp'] = {'serverName':'astock','command':sys.executable,
                           'args':['-m','review_agent.mcp_server'],
-                          'env':{'PYTHONPATH':str(REPO),'ASTOCK_AGENT_RUN':str(run),'PYTHONUTF8':'1','PYTHONIOENCODING':'utf-8'},
+                          'env':{**_mcp_child_env(run), 'PYTHONPATH':str(REPO)},
                           'allowedTools':['mcp__astock__'+name for name in tools], 'maxTurns':32}
     result = call_bridge(runtime, source['provider'], request, cancel, progress, budget + 10)
     text = result.get('text')

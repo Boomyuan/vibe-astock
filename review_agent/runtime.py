@@ -227,6 +227,27 @@ def engine_command() -> list[str]:
     return [node, str(CLI)]
 
 
+def _mcp_child_env(run: Path) -> dict:
+    """astock MCP 子进程的显式环境（env_vars=[] 剥掉父环境后的最小补集）。
+
+    ⚠️ 为什么不能只给 3 个变量：`env_vars: []` 让引擎不透传任何父环境变量，
+    而子进程 import 链上有 `duanxian.paths.data_path` → `Path.expanduser()` ——
+    Windows 没有 USERPROFILE/HOME 时直接 `RuntimeError: Could not determine
+    home directory`，MCP 服务秒崩，引擎侧只看到 os error 231（管道忙），
+    报成"Agent 未完成"，根本看不出真因（2026-10-13 实测本机确定性复现）。
+    这里显式补上 Python/Windows 初始化需要的系统变量；只透传值、
+    不引入任何凭据，封闭性（不把服务端其他 provider 的密钥带给子进程）不变。
+    """
+    env = {"ASTOCK_AGENT_RUN": str(run), "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    for name in ("USERPROFILE", "HOME", "SYSTEMROOT", "WINDIR", "SYSTEMDRIVE",
+                 "COMSPEC", "PATHEXT", "TEMP", "TMP", "PATH",
+                 "APPDATA", "LOCALAPPDATA", "LANG"):
+        value = os.environ.get(name, "")
+        if value:
+            env[name] = value
+    return env
+
+
 def config_for(run: Path, source: dict) -> dict:
     config = {
         "approval_policy": "never", "web_search": "disabled", "developer_instructions": SOP,
@@ -236,7 +257,7 @@ def config_for(run: Path, source: dict) -> dict:
         "features": {key: False for key in DISABLED},
         "mcp_servers": {"astock": {
             "command": sys.executable, "args": ["-m", "review_agent.mcp_server"], "cwd": str(REPO),
-            "env": {"ASTOCK_AGENT_RUN": str(run), "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}, "env_vars": [], "required": True,
+            "env": _mcp_child_env(run), "env_vars": [], "required": True,
             "startup_timeout_sec": 30, "tool_timeout_sec": 30,
             "enabled_tools": list(TOOLS), "default_tools_approval_mode": "approve",
         }},

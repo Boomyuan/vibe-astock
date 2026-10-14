@@ -54,7 +54,7 @@ class FrozenInputs:
                 from .grounding import SOURCES
                 self.progress("正在取数：" + SOURCES.get(name, name))
                 value = fetch_public(name, [date], self.directory, self.check, timeout=90)
-                if name in {"get_emotion_metrics", "get_market_facts"}:
+                if name in {"get_emotion_metrics", "get_market_facts", "get_emotion_state_data"}:
                     if not isinstance(value, list) or len(value) != 2 or not isinstance(value[0], str) or not isinstance(value[1], dict):
                         raise EvidenceError("复盘取数返回格式错误")
                     value = tuple(value)

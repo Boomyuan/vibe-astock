@@ -83,6 +83,80 @@ def get_emotion_metrics(date: str) -> tuple[str, dict]:
         return _degrade("派生情绪指标", date, exc), {}
 
 
+def get_emotion_state_data(date: str) -> tuple[str, dict]:
+    """情绪周期状态机（六态，移植自开源复盘看板 v4c）。
+
+    与 get_emotion_metrics 的分工：指标层回答"今天各读数多少、在历史什么位置"，
+    状态机层把这些读数合成一个**情绪周期位置**（候选态 + T+1 确认态）。
+    它是分析框架不是客观事实；本地分位基线不足时只描述不判定（见 emotion_state）。
+    """
+    try:
+        from . import emotion_state as es
+
+        state = es.build_state(date)
+        return es.render(state), state
+    except Exception as exc:  # noqa: BLE001
+        return _degrade("情绪状态机", date, exc), {}
+
+
+def get_extra_sources_data(date: str) -> str:
+    """盘外增强源（开盘啦 / 短线侠免费通道 / hhxg 题材热度）。
+
+    补充口径，每一路独立缺席、互不拖垮。**只在对的场次给数据**：
+    KPL 情绪与短线侠播报仅当日实时（接口核验 / 无日期字段），hhxg 仅最新一期；
+    复盘历史日期时这里大多如实标注"不适用于该日"，这是设计不是故障。
+    """
+    from .util import china_today
+    from . import extra_sources as es
+
+    lines = ["[盘外增强源]（第三方补充口径，来源各自标注；缺席不代表主数据不可用）"]
+    ymd = _ymd(date)
+
+    # ① 开盘啦情绪：有 Day 日期回显，逐次核对 —— 对得上才用
+    try:
+        mood = es.kpl_mood(expected_ymd=ymd)
+        lines.append(
+            f"· 开盘啦情绪（{mood['date']}）：情绪值 {mood['sentiment']}，"
+            f"涨停 {mood['limit_up_count']} 家，连板高度 {mood['max_consec_boards']} 板，"
+            f"大幅回撤 {mood['drawdown_count']} 家"
+            + (f"；提示：{mood['tip']}" if mood.get("tip") else "")
+            + "（App 抓包接口，涨停认定口径与东财池子不同，只作对照不作合计）"
+        )
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"· 开盘啦情绪：不可用（{type(exc).__name__}: {str(exc)[:80]}）"
+                     "—— 历史日期无此数据，仅当日实时")
+
+    # ② 短线侠涨停播报：仅当日实时（条目无日期字段，非目标日一律不用）
+    try:
+        if ymd == china_today().replace("-", ""):
+            rows = es.duanxianxia_ztlive()
+            with_reason = [r for r in rows if r.get("reason")]
+            sample = "、".join(f"{r['name']}({r['boards']}):{r['reason']}"
+                               for r in with_reason[:6]) or "（本批无涨停原因字段）"
+            lines.append(f"· 短线侠涨停播报（当日实时，共 {len(rows)} 条，"
+                         f"含源站归因 {len(with_reason)} 条）：{sample} …"
+                         "（ztyy 是源站编辑归因，非公司确认，与问财口径不同源）")
+        else:
+            lines.append(f"· 短线侠涨停播报：不适用于 {date}（该源仅当日实时，无历史）")
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"· 短线侠涨停播报：不可用（{type(exc).__name__}: {str(exc)[:80]}）")
+
+    # ③ hhxg 题材热度：仅最新一期，latest_date 核对
+    try:
+        heat = es.hhxg_theme_heat(expected_date=date)
+        segs = []
+        for it in heat["items"][:8]:
+            zt = f"涨停{it['limit_up']:.0f}家" if it.get("limit_up") is not None else ""
+            yz = f"溢价{it['premium']:+.1f}%" if it.get("premium") is not None else ""
+            segs.append(it["name"] + "（" + "，".join(x for x in (zt, yz) if x) + "）")
+        lines.append(f"· hhxg 题材热度榜（{heat['date']} 期，按溢价排序）："
+                     + "、".join(segs) + "（源站统计口径，非涨停池直接统计）")
+    except Exception as exc:  # noqa: BLE001
+        lines.append(f"· hhxg 题材热度榜：不可用（{type(exc).__name__}: {str(exc)[:80]}）"
+                     "—— 该源仅最新一期")
+    return "\n".join(lines)
+
+
 def get_market_facts(date: str) -> tuple[str, dict]:
     """客观事实表（封板质量 / 亏钱效应 / 反馈矩阵 / 题材结构 / 事件账本 / 分板块）。
 

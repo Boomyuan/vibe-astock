@@ -20,6 +20,10 @@ def inputs(date=DATE, count=39):
             "promotion": {"available": True, "limit_up_count": count, "prev_limit_up_count": 44},
             "money_effect": {"available": True, "median": -1.78}}),
         "get_market_facts": ("全市场跌停未获取", {}),
+        "get_emotion_state_data": ("[情绪周期状态机]（候选「退潮」→ 确认「退潮」；样本 35 个交易日）", {
+            "date": date, "available": True, "candidate": "退潮", "confirmed": "退潮",
+            "sample_days": 35, "s_pct": 28.5}),
+        "get_extra_sources_data": "[盘外增强源]（第三方补充口径）\n· 开盘啦情绪：不可用（该源仅当日实时）",
         "get_capital_data": "[⚠️ 历史资金未获取]",
         "get_macro_sector_data": "[⚠️ 历史板块未获取]",
         "get_theme_reasons": "[⚠️ 题材原因未获取]",

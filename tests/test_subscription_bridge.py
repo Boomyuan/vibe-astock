@@ -12,6 +12,10 @@ from review_agent.runtime import Runtime, REPO
 from review_agent.subscription_bridge import invoke, bridge_environment, subscription_status
 from review_agent.evidence import EvidenceError
 
+# fake_cli 是依赖 POSIX shebang 直执行、/bin/sleep 与 ps 的假 CLI；Windows 上
+# 无法 spawn（也不会创建 pids.json），这些用例只能跑在 POSIX 环境。
+posix_only = pytest.mark.skipif(os.name == 'nt', reason='fake CLI 依赖 POSIX shebang/sleep/ps，Windows 不适用')
+
 
 def fake_cli(tmp_path, mode='success', require_user=False):
     target=tmp_path/'fake-claude';log=tmp_path/'calls.json';pids=tmp_path/'pids.json'
@@ -68,6 +72,7 @@ def test_subscription_environment_preserves_os_identity_without_api_routing(tmp_
         assert not {'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_OAUTH_TOKEN'} & env.keys()
 
 
+@posix_only
 def test_claude_status_through_real_bridge_requires_os_user(tmp_path, monkeypatch):
     cli, _, _ = fake_cli(tmp_path, require_user=True)
     monkeypatch.setenv('CLAUDE_BIN', str(cli))
@@ -84,6 +89,7 @@ def test_claude_status_through_real_bridge_requires_os_user(tmp_path, monkeypatc
     assert subscription_status(runtime, 'claude')['available'] is True
 
 
+@posix_only
 def test_bridge_stdin_and_plain_tool_isolation(tmp_path,monkeypatch):
     cli,log,_=fake_cli(tmp_path)
     monkeypatch.setenv('CLAUDE_BIN',str(cli));monkeypatch.setenv('ANTHROPIC_API_KEY','MUST_NOT_ROUTE');monkeypatch.setenv('OPENAI_API_KEY','MUST_NOT_ROUTE')
@@ -98,6 +104,7 @@ def test_bridge_stdin_and_plain_tool_isolation(tmp_path,monkeypatch):
 
 
 @pytest.mark.parametrize('ending',['cancel','timeout','parent-death'])
+@posix_only
 def test_bridge_descendants_stop(tmp_path,monkeypatch,ending):
     cli,_,pids=fake_cli(tmp_path,'wait');monkeypatch.setenv('CLAUDE_BIN',str(cli))
     parent=None;cancel=threading.Event();timer=None;known=[]
@@ -140,6 +147,7 @@ def test_claude_probe_failure_is_not_reported_as_logout(tmp_path,monkeypatch):
         invoke(runtime,tmp_path/'run',{'provider':'claude','model':'default'},'test','test',threading.Event(),lambda _:None,20,tools=())
 
 
+@posix_only
 def test_claude_cold_start_longer_than_five_seconds_is_not_logout(tmp_path,monkeypatch):
     cli,_,_=fake_cli(tmp_path)
     cli.write_text(cli.read_text().replace("if '--version' in args: print", "if '--version' in args: time.sleep(6);print"))
@@ -149,6 +157,7 @@ def test_claude_cold_start_longer_than_five_seconds_is_not_logout(tmp_path,monke
 
 
 
+@posix_only
 def test_claude_help_failure_retains_detected_version(tmp_path,monkeypatch):
     cli,_,_=fake_cli(tmp_path)
     cli.write_text(cli.read_text().replace("if '--help' in args: print", "if '--help' in args: sys.exit(2);print"))
@@ -158,6 +167,7 @@ def test_claude_help_failure_retains_detected_version(tmp_path,monkeypatch):
     assert result['status']=='probe_failed'
 
 
+@posix_only
 def test_claude_probe_preserves_startup_window_for_all_three_steps(tmp_path,monkeypatch):
     cli,_,_=fake_cli(tmp_path)
     cli.write_text(cli.read_text().replace("if '--version' in args: print", "if '--version' in args: time.sleep(8);print").replace("if '--help' in args: print", "if '--help' in args: time.sleep(8);print").replace(" logged_in =", " time.sleep(8)\n logged_in ="))

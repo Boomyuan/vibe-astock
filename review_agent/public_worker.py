@@ -16,7 +16,8 @@ QUERY_CALLS = {"query_quote", "query_valuation", "query_reports", "query_news", 
 MIGRATED_CALLS = {"run_backtest", "macro_probability"}
 DEEPDIVE_CALLS = {"resolve", "get_profile", "get_theme", "get_lhb", "get_kline"}
 DAILY_CALLS = {"get_sentiment_data", "get_emotion_metrics", "get_market_facts", "get_capital_data",
-               "get_macro_sector_data", "get_theme_reasons", "get_dragon_tiger_data", "get_leader_data"}
+               "get_macro_sector_data", "get_theme_reasons", "get_dragon_tiger_data", "get_leader_data",
+               "get_emotion_state_data", "get_extra_sources_data"}
 
 
 

@@ -2078,7 +2078,14 @@ class TestLiveQuotesGateWindows:
             return _R()
 
         import urllib.request
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+
+        # 行情源已改为 build_opener(ProxyHandler({})) 直连（绕系统代理），
+        # 补丁要落在 build_opener 上，否则测试会打出真实网络请求。
+        class _FakeOpener:
+            def open(self, url, timeout=8):
+                return fake_urlopen(url, timeout=timeout)
+
+        monkeypatch.setattr(urllib.request, "build_opener", lambda *a, **k: _FakeOpener())
         tc._quote_day_cache.clear()
 
         assert tc.quote_trade_day() == "2026-07-28"      # ① 开盘前
@@ -2131,7 +2138,11 @@ class TestLiveQuotesGateWindows:
                 def __exit__(self_inner, *a): return False
             return _R()
 
-        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        class _FakeOpener:
+            def open(self, url, timeout=8):
+                return fake_urlopen(url, timeout=timeout)
+
+        monkeypatch.setattr(urllib.request, "build_opener", lambda *a, **k: _FakeOpener())
         tc._quote_day_cache.clear()
 
         # 09:14:59 —— 距边界 1 秒，所以缓存最多只能活 1 秒
@@ -2171,7 +2182,11 @@ class TestLiveQuotesGateWindows:
                 def __exit__(self_inner, *a): return False
             return _R()
 
-        monkeypatch.setattr(urllib.request, "urlopen", slow_urlopen)
+        class _SlowOpener:
+            def open(self, url, timeout=8):
+                return slow_urlopen(url, timeout=timeout)
+
+        monkeypatch.setattr(urllib.request, "build_opener", lambda *a, **k: _SlowOpener())
         tc._quote_day_cache.clear()
 
         assert tc.quote_trade_day() == "2026-07-28"      # 值照常返回

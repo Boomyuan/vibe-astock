@@ -26,9 +26,11 @@ UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
 
 def get_prefix(code: str) -> str:
     """6 位代码 → 交易所前缀。5 开头是沪市基金/ETF（51/56/58 等），深市基金 15/16 开头走默认 sz。"""
+    if code.startswith("920"):
+        return "bj"  # 920 号段是北交所新代码（须先于 "9" 判断，900xxx 才是沪 B）
     if code.startswith(("6", "9", "5")):
         return "sh"
-    if code.startswith("8"):
+    if code.startswith(("8", "4")):
         return "bj"
     return "sz"
 
@@ -44,7 +46,9 @@ class DependencyMissing(RuntimeError):
 def _fetch_gtimg(prefixed_codes: list[str]) -> str:
     url = "https://qt.gtimg.cn/q=" + ",".join(prefixed_codes)
     req = urllib.request.Request(url, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=10) as resp:
+    # 国内行情源直连，绕过系统代理（加速器/VPN 开启时代理拒连会误伤行情）
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(req, timeout=10) as resp:
         return resp.read().decode("gbk")
 
 

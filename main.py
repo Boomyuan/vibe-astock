@@ -30,6 +30,7 @@ def initial_state(trade_date: str) -> dict:
         "leader_report": "",
         "macro_sector_report": "",
         "emotion_metrics": {}, "market_facts": {},  # 派生情绪指标（情绪面分析师写入）
+        "emotion_state": {},  # 情绪周期状态机结构化（情绪面分析师写入）
         "tomorrow_focus": "",
         "focus_struct": None,
         "past_context": reflection.get_past_context(end=trade_date),  # 反思闭环：注入历史命中回看

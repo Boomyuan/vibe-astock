@@ -66,7 +66,9 @@ def get_profile(code: str) -> str:
     """腾讯实时行情快照。字段索引经实测校准（见上方常量）。"""
     try:
         sym = _tx_symbol(code)
-        raw = urllib.request.urlopen(_TENCENT + sym, timeout=8).read().decode("gbk", "ignore")
+        # 国内行情源直连，绕过系统代理（加速器开启时代理拒连会误伤行情）
+        _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        raw = _opener.open(_TENCENT + sym, timeout=8).read().decode("gbk", "ignore")
         f = raw.split("~")
         if len(f) <= _F_VOL_RATIO:
             return f"[⚠️ {code} 行情获取异常]"

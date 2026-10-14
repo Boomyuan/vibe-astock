@@ -21,6 +21,7 @@ class DuanxianReviewState(TypedDict):
     macro_sector_report: Annotated[str, "大板块本周：算力 / 人形 / 商业火箭 强弱"]
     emotion_metrics: Annotated[dict, "派生情绪指标结构化（赚钱效应/晋级率/连板溢价）——供 UI 与命中回看"]
     market_facts: Annotated[dict, "客观事实表（封板质量/亏钱效应/反馈矩阵/题材结构/事件账本/分板块）——供 UI 直接渲染"]
+    emotion_state: Annotated[dict, "情绪周期状态机结构化（六态候选/确认、S 分位、样本量）——供 UI 渲染；样本不足时 available=False"]
 
     # ===== 最终结论 =====
     tomorrow_focus: Annotated[str, "复盘裁判综合出的『明天关注点』（渲染成 markdown）"]

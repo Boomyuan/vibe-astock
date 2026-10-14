@@ -62,8 +62,9 @@ def _cache_path(code: str, start: str, end: str) -> str:
 
 def _tx_symbol(code: str) -> str:
     code = str(code).zfill(6)
-    # 与 deepdive/data.py 同一口径：北交所 8x/4x/920 归 sz 前缀由数据源决定，
-    # 这里只区分沪/深，取不到时上层会如实标 unavailable。
+    # 北交所 8x/4x/920 走 bj（腾讯实测可用）；920 须先于 "9"（900xxx 沪B）判断。
+    if code.startswith(("8", "4", "920")):
+        return "bj" + code
     return ("sh" if code.startswith(("6", "9")) else "sz") + code
 
 

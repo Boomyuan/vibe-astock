@@ -21,9 +21,9 @@ _F_PCT = 32
 
 
 def _tx_symbol(code: str) -> str:
-    """6 位代码 → 腾讯符号。北交所 8/4 开头走 bj，6 开头 sh，其余 sz。"""
+    """6 位代码 → 腾讯符号。北交所 8/4/920 开头走 bj，6 开头 sh，其余 sz。"""
     code = str(code).zfill(6)
-    if code[0] in ("8", "4"):
+    if code[0] in ("8", "4") or code.startswith("920"):
         return f"bj{code}"
     return f"sh{code}" if code.startswith("6") else f"sz{code}"
 
@@ -36,7 +36,9 @@ def batch_pct(codes: list[str], *, opening_date: str | None = None) -> dict[str,
         chunk = uniq[i : i + _BATCH]
         try:
             url = _TENCENT + ",".join(_tx_symbol(c) for c in chunk)
-            raw = urllib.request.urlopen(url, timeout=10).read().decode("gbk", "ignore")
+            # 国内行情源直连，绕过系统代理（加速器开启时代理拒连会误伤行情）
+            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            raw = opener.open(url, timeout=10).read().decode("gbk", "ignore")
         except Exception:  # noqa: BLE001  单批失败不拖累整体
             continue
         for line in raw.split(";"):

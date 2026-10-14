@@ -28,7 +28,9 @@ def test_capture_does_not_archive_trial_or_late_auction(monkeypatch,clock,slot,p
 def test_auction_return_uses_opening_price_not_latest(monkeypatch):
  from duanxian import emotion_metrics as em
  f=['']*55;f[0]='v_sh600000="';f[4]='10';f[5]='10.2';f[30]='20260908092600';f[32]='9.9'
- monkeypatch.setattr(em.urllib.request,'urlopen',lambda *a,**k:SimpleNamespace(read=lambda:'~'.join(f).encode()))
+ # 行情源已改为 build_opener(ProxyHandler({})) 直连，补丁落在 build_opener 上
+ _resp=lambda:SimpleNamespace(read=lambda:'~'.join(f).encode())
+ monkeypatch.setattr(em.urllib.request,'build_opener',lambda *a,**k:SimpleNamespace(open=lambda *a2,**k2:_resp()))
  assert em.batch_pct(['600000'],opening_date='2026-09-08')['600000']==pytest.approx(2)
  f[5]='0';assert em.batch_pct(['600000'],opening_date='2026-09-08')=={}
 

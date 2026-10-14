@@ -180,6 +180,7 @@ def build(date: str, prev: Optional[str] = None, top: int = 10) -> dict:
                 # 反包票（3天2板）东财连板数只给 1，排序按有效高度，别沉到榜尾
                 "_h": max(b, mf.stat_boards(stat)),
                 "first_seal": t or None, "broken_times": int(r.get("broken_times") or 0),
+                "turnover": r.get("turnover"),
             })
 
     # 昨日题材即使今天没有涨停也保留，避免整条失去反馈的题材消失。

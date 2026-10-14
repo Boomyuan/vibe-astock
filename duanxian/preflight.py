@@ -37,6 +37,8 @@ _CHECKS: tuple[tuple[str, str, bool], ...] = (
     ("资金面", "get_capital_data", False),
     ("龙虎榜", "get_dragon_tiger_data", False),
     ("题材串", "get_theme_reasons", False),
+    ("情绪状态机", "get_emotion_state_data", False),
+    ("盘外增强源", "get_extra_sources_data", False),
 )
 
 

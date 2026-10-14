@@ -65,6 +65,8 @@ def _today() -> str:
 def _tx_symbol(code: str) -> str:
     """6 位代码 → 腾讯 hist 需要的带市场前缀符号。"""
     code = code.zfill(6)
+    if code.startswith("920"):
+        return "bj" + code  # 北交所新号段，须先于 "9"（900xxx 沪B）判断
     if code[0] in ("5", "6", "9"):
         return "sh" + code
     if code[0] in ("0", "2", "3"):

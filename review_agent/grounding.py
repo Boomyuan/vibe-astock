@@ -20,11 +20,14 @@ SOURCES = {
     "get_market_facts": "盘面事实", "get_capital_data": "资金面",
     "get_macro_sector_data": "大赛道", "get_theme_reasons": "涨停题材原因",
     "get_dragon_tiger_data": "龙虎榜样本", "get_leader_data": "龙头与历史归档",
+    "get_emotion_state_data": "情绪周期状态机", "get_extra_sources_data": "盘外增强源",
 }
 ROLE_SOURCES = {
-    "sentiment": ("get_sentiment_data", "get_emotion_metrics", "get_market_facts"),
+    "sentiment": ("get_sentiment_data", "get_emotion_metrics", "get_market_facts",
+                  "get_emotion_state_data"),
     "capital": ("get_capital_data", "get_macro_sector_data", "get_market_facts"),
-    "theme": ("get_theme_reasons", "get_market_facts"), "dragon_tiger": ("get_dragon_tiger_data",),
+    "theme": ("get_theme_reasons", "get_market_facts", "get_extra_sources_data"),
+    "dragon_tiger": ("get_dragon_tiger_data",),
     "leader": ("get_leader_data", "get_market_facts", "get_emotion_metrics"),
 }
 NOTE = "输入片段与引用已核对；数据源正确性及 AI 推断是否成立，未据此得到证明。"
