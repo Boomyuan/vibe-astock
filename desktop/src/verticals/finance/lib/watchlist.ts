@@ -8,6 +8,8 @@ import { backend, type LedgerRecord } from "./backend.ts";
 import { normalizeMarketSymbol } from "./marketSymbol.ts";
 
 let cache: string[] = [];
+/** 台账里记住的 名称 → 行情没回来时兜底显示（用户导入过名称的股票不该显示成代码） */
+const names = new Map<string, string>();
 /** 已经排进队、还没写进台账的「加一只」：重读台账时补回缓存，别的页面这时读到的列表里也有它 */
 const pending = new Set<string>();
 
@@ -17,13 +19,21 @@ async function currentIds(): Promise<{ ids: Map<string, string>; dupes: string[]
   const rows: LedgerRecord[] = led.records.watch ?? [];
   const ids = new Map<string, string>();
   const dupes: string[] = [];
+  names.clear();
   for (const r of rows) {
     const c = normalizeMarketSymbol(r.symbol);
     if (!c) continue;
+    const nm = typeof r.name === "string" ? r.name : null;
+    if (nm && !names.has(c)) names.set(c, nm);
     if (ids.has(c)) dupes.push(r.id);
     else ids.set(c, r.id);
   }
   return { ids, dupes };
+}
+
+/** 台账里该代码的名称；没有则 null（调用方再往代码兜底） */
+export function watchNameOf(code: string): string | null {
+  return names.get(code) ?? null;
 }
 
 /**
