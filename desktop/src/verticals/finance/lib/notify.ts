@@ -63,8 +63,8 @@ export const WEBHOOK_KINDS: { kind: WebhookKind; label: string; signLabel: strin
     hint: "群聊右上角 → 消息推送(群机器人)→ 添加,复制 Webhook 地址。企业微信没有签名,地址本身就能发消息,别发给别人。" },
   { kind: "dingtalk", label: "钉钉", signLabel: "加签密钥(SEC 开头)",
     hint: "群设置 → 机器人 → 添加机器人 → 自定义,复制 Webhook 地址。建议安全设置选「加签」,把 SEC 开头的密钥一起填上。" },
-  { kind: "wxpusher", label: "WxPusher", signLabel: "appToken", uidLabel: "UID(订阅者 ID)",
-    hint: "微信公众号推送:在 wxpusher.zjiecode.com 创建应用拿 appToken;微信关注「WxPusher」公众号后,在后台用户列表里拿到你的 UID。地址固定填 https://wxpusher.zjiecode.com/api/send/message。" },
+  { kind: "wxpusher", label: "WxPusher", signLabel: "appToken 或 SPT 个人令牌", uidLabel: "UID(标准方式必填)",
+    hint: "微信公众号推送,两种凭据二选一:① 最简 —— 微信关注「wxpusher」公众号,菜单「个人推送」页复制 SPT 令牌,地址填 https://wxpusher.zjiecode.com/api/send/message/simple-push;② 标准 —— 官网后台创建应用拿 appToken(AT_ 开头),地址填 https://wxpusher.zjiecode.com/api/send/message,并填上公众号「我的→我的UID」里的 UID。" },
 ];
 
 /** 本地时间显示(收件箱时间是 UTC ISO) */

@@ -225,9 +225,17 @@ export function loadSettings(dataRoot: string): Settings {
       if (checkWebhookUrl(h.kind, h.url) === null) return corrupt("settings");
       const secret = typeof h.secret === "string" && h.secret ? h.secret : undefined;
       const uid = typeof h.uid === "string" && h.uid ? h.uid : undefined;
-      // WxPusher 没有 appToken / uid 就永远发不出去:存了等于没存,按损坏处理,免得页面显示「已配置」却推不到人
-      if (h.kind === "wxpusher" && (!secret || !uid || !WXPUSHER_UID_RE.test(uid))) return corrupt("settings");
-      if (h.kind !== "wxpusher" && uid !== undefined) return corrupt("settings");
+      // WxPusher 两种凭据二选一、地址必须配对(混着配发不出去,按损坏处理):
+      //   SPT 个人令牌(SPT_ 开头)→ simple-push 地址,不用 uid(最简,推荐)
+      //   标准方式 appToken → message 地址 + 必填 uid
+      if (h.kind === "wxpusher") {
+        if (!secret) return corrupt("settings");
+        const spt = secret.startsWith("SPT_");
+        if (spt !== h.url.endsWith("/message/simple-push")) return corrupt("settings");
+        if (!spt && (!uid || !WXPUSHER_UID_RE.test(uid))) return corrupt("settings");
+      } else if (uid !== undefined) {
+        return corrupt("settings");
+      }
       return { id: h.id, kind: h.kind, url: h.url, ...(secret ? { secret } : {}), ...(uid ? { uid } : {}),
         label: typeof h.label === "string" ? h.label.slice(0, 40) : "", enabled: h.enabled !== false };
     }),
@@ -329,8 +337,8 @@ const WEBHOOK_RULES: Record<WebhookKind, { label: string; hosts: string[]; path:
   feishu: { label: "飞书", hosts: ["open.feishu.cn", "open.larksuite.com"], path: /^\/open-apis\/bot\/v2\/hook\/[A-Za-z0-9-]{8,80}$/ },
   wecom: { label: "企业微信", hosts: ["qyapi.weixin.qq.com"], path: /^\/cgi-bin\/webhook\/send$/, query: "key" },
   dingtalk: { label: "钉钉", hosts: ["oapi.dingtalk.com"], path: /^\/robot\/send$/, query: "access_token" },
-  // WxPusher(微信公众号推送):地址固定,凭据是 body 里的 appToken,订阅者用 uid 指定 —— 地址本身不含凭据
-  wxpusher: { label: "WxPusher", hosts: ["wxpusher.zjiecode.com"], path: /^\/api\/send\/message$/ },
+  // WxPusher(微信公众号推送):凭据是 body 里的 appToken(SPT 个人令牌走 simple-push),订阅者用 uid 指定 —— 地址本身不含凭据
+  wxpusher: { label: "WxPusher", hosts: ["wxpusher.zjiecode.com"], path: /^\/api\/send\/message(?:\/simple-push)?$/ },
 };
 
 const isKind = (v: unknown): v is WebhookKind => v === "feishu" || v === "wecom" || v === "dingtalk" || v === "wxpusher";
@@ -449,9 +457,13 @@ export function webhookRequest(hook: Webhook, text: string, now: Date): { url: s
     return { url: hook.secret ? `${hook.url}&timestamp=${ts}&sign=${dingtalkSign(hook.secret, ts)}` : hook.url, body: { msgtype: "text", text: { content: text } } };
   }
   if (hook.kind === "wxpusher") {
-    // WxPusher:凭据在 body(appToken),订阅者用 uids;summary 是通知栏预览,取首行去掉多余空白
+    // WxPusher:凭据在 body,订阅者用 uids;summary 是通知栏预览,取首行去掉多余空白
     const content = clipChars(text, WXPUSHER_CONTENT_MAX);
     const summary = clipChars(content.split("\n").filter(Boolean)[0] ?? content, 100);
+    // SPT 个人令牌走 simple-push,不用 uids;标准 appToken + uids
+    if (hook.secret?.startsWith("SPT_")) {
+      return { url: hook.url, body: { content, spt: hook.secret, summary, contentType: 1 } };
+    }
     return { url: hook.url, body: { appToken: hook.secret ?? "", uids: hook.uid ? [hook.uid] : [], content, summary, contentType: 1 } };
   }
   return { url: hook.url, body: { msgtype: "text", text: { content: text } } };
@@ -893,9 +905,17 @@ export async function notifyAction(ctx: ServiceContext, action: string, body: un
       // 企业微信群机器人没有签名密钥这一项:填了也用不上,别存下来让页面显示成「已签名」
       if (kind === "wecom" && b.secret !== undefined && b.secret !== "") bad("企业微信群机器人没有签名密钥,不用填");
       if (kind !== "wxpusher" && b.uid !== undefined && b.uid !== "") bad(`${WEBHOOK_RULES[kind].label}不用填 UID`);
-      // WxPusher 的凭据是 appToken(放在 secret 字段),订阅者用 uid 指定:两个都必填,缺一个永远推不到人
-      if (kind === "wxpusher" && !(typeof b.secret === "string" && b.secret.trim())) bad("WxPusher 需要填 appToken(在 wxpusher.zjiecode.com 的应用管理里)");
-      if (kind === "wxpusher" && !(typeof b.uid === "string" && b.uid.trim())) bad("WxPusher 需要填 UID(关注公众号后,在「我的订阅」或后台用户列表里)");
+      // WxPusher 两种凭据二选一、地址必须配对:SPT 个人令牌(SPT_ 开头)→ simple-push 地址;标准 appToken → message 地址 + 必填 uid
+      if (kind === "wxpusher") {
+        const spt = typeof b.secret === "string" && b.secret.trim().startsWith("SPT_");
+        if (!(typeof b.secret === "string" && b.secret.trim())) bad("WxPusher 需要填 appToken(或 SPT 个人令牌,公众号「个人推送」页复制)");
+        else if (spt !== url!.endsWith("/message/simple-push")) {
+          bad(spt ? "SPT 令牌要把地址填成 https://wxpusher.zjiecode.com/api/send/message/simple-push"
+                  : "appToken 要把地址填成 https://wxpusher.zjiecode.com/api/send/message");
+        } else if (!spt && !(typeof b.uid === "string" && b.uid.trim())) {
+          bad("标准方式(appToken)需要填 UID;图省事可以在公众号「个人推送」页拿 SPT 令牌,那样不用 UID");
+        }
+      }
       const secret = b.secret === undefined || b.secret === "" ? undefined : typeof b.secret === "string" && /^[\x21-\x7e]{8,128}$/.test(b.secret.trim()) ? b.secret.trim() : bad("签名密钥格式不对");
       const uid = b.uid === undefined || b.uid === "" ? undefined : typeof b.uid === "string" && WXPUSHER_UID_RE.test(b.uid.trim()) ? b.uid.trim() : bad("UID 格式不对(字母数字,4–64 位)");
       const label = b.label === undefined ? "" : typeof b.label === "string" ? b.label.trim().slice(0, 40) : bad("label 必须是文字");

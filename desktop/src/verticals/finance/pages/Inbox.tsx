@@ -80,13 +80,13 @@ function AddWebhook({ onAdd }: { onAdd: (b: { kind: WebhookKind; url: string; se
     </div>
     {kind === "wxpusher"
       ? <input aria-label="API 地址" type="url" autoComplete="off" spellCheck={false} value={url} onChange={(e) => setUrl(e.target.value)}
-          placeholder="https://wxpusher.zjiecode.com/api/send/message" className={cn(INPUT, "w-full py-1.5 font-mono")} />
+          placeholder={secret.trim().startsWith("SPT_") ? "https://wxpusher.zjiecode.com/api/send/message/simple-push" : "https://wxpusher.zjiecode.com/api/send/message"} className={cn(INPUT, "w-full py-1.5 font-mono")} />
       : <input aria-label="Webhook 地址" type="password" autoComplete="off" spellCheck={false} value={url} onChange={(e) => setUrl(e.target.value)}
           placeholder={`${meta.label}机器人的 Webhook 地址`} className={cn(INPUT, "w-full py-1.5 font-mono")} />}
     {meta.signLabel && <input aria-label={meta.signLabel} type="password" autoComplete="off" spellCheck={false} value={secret} onChange={(e) => setSecret(e.target.value)}
       placeholder={kind === "wxpusher" ? meta.signLabel : `${meta.signLabel}(可不填)`} className={cn(INPUT, "w-full py-1.5 font-mono")} />}
     {meta.uidLabel && <input aria-label={meta.uidLabel} autoComplete="off" spellCheck={false} value={uid} onChange={(e) => setUid(e.target.value)}
-      placeholder={`${meta.uidLabel}(必填)`} className={cn(INPUT, "w-full py-1.5 font-mono")} />}
+      placeholder={kind === "wxpusher" ? meta.uidLabel : `${meta.uidLabel}(必填)`} className={cn(INPUT, "w-full py-1.5 font-mono")} />}
     <p className="text-[11px] leading-5 text-muted-foreground">{meta.hint} 只用「自定义关键词」校验时,消息可能被平台拒收。</p>
     <button type="submit" disabled={saving || !url.trim()} className={BTN}><Plus className="h-3.5 w-3.5" />{saving ? "添加中…" : "添加"}</button>
   </form>;

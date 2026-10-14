@@ -666,3 +666,37 @@ test("WxPusher 发送:code 1000 才算成功;错误信息里抹掉 appToken 和 
     assert.doesNotMatch(bad.error, new RegExp(WXP_UID));
   } finally { clean(ctx); }
 });
+
+test("WxPusher SPT 模式:simple-push 地址配 SPT 令牌,不用 UID", async () => {
+  const SPT = "SPT_zcrp4hdu4Bo2yzMab7rtpqvbXjf1";
+  const SIMPLE = "https://wxpusher.zjiecode.com/api/send/message/simple-push";
+  assert.equal(checkWebhookUrl("wxpusher", SIMPLE), SIMPLE);
+  // 请求体:spt 字段,没有 uids
+  const hook = { id: "t", kind: "wxpusher" as const, url: SIMPLE, secret: SPT, label: "", enabled: true };
+  const body = webhookRequest(hook, "【测试】一行", new Date("2026-10-14T08:00:00Z")).body;
+  assert.equal(body.spt, SPT);
+  assert.equal("uids" in body, false);
+  assert.equal(body.contentType, 1);
+  // 添加:混着配(地址/凭据不成对)必须拒绝
+  const ctx = tmpCtx();
+  try {
+    const h = harness();
+    await assert.rejects(
+      notifyAction(ctx, "webhooks/add", { kind: "wxpusher", url: WXP_URL, secret: SPT }, { def: h.def }),
+      (e: unknown) => e instanceof ServiceError && /simple-push/.test(e.message),
+    );
+    await assert.rejects(
+      notifyAction(ctx, "webhooks/add", { kind: "wxpusher", url: SIMPLE, secret: WXP_TOKEN }, { def: h.def }),
+      (e: unknown) => e instanceof ServiceError && /appToken 要把地址填成/.test(e.message),
+    );
+    const ov = await notifyAction(ctx, "webhooks/add", { kind: "wxpusher", url: SIMPLE, secret: SPT, label: "SPT 推送" }, { def: h.def }) as ReturnType<typeof notifyOverview>;
+    assert.equal(ov.settings.webhooks[0]!.kind, "wxpusher");
+    assert.doesNotMatch(JSON.stringify(ov), /SPT_zcrp4hdu4Bo2yzMab7rtpqvbXjf1/); // SPT 令牌不回显
+    // 发送成功
+    const calls: { url: string; body: Record<string, unknown> }[] = [];
+    const out = await notifyAction(ctx, "test", { channel: ov.settings.webhooks[0]!.id }, { def: h.def, deps: { fetch: fakeFetch(calls, () => ({ status: 200, body: { code: 1000, msg: "处理成功" } })), sleep: async () => undefined } }) as { ok: boolean };
+    assert.equal(out.ok, true);
+    assert.equal(calls[0]!.url, SIMPLE);
+    assert.equal(calls[0]!.body.spt, SPT);
+  } finally { clean(ctx); }
+});
