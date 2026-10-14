@@ -490,7 +490,35 @@ function npmNodeEntry(bin: string): string | null {
     if (!source.startsWith("#!/usr/bin/env pwsh\n") ||
       !source.includes("$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent\n")) return null;
     const targets = [...source.matchAll(/&\s+"(?:\$basedir\/)?node\$exe"\s+"\$basedir\/([^"\r\n]+)"\s+\$args\b/g)].map((m) => m[1]!);
-    if (!targets.length || new Set(targets).size !== 1 || /[$`]/.test(targets[0]!) || !/\.[cm]?js$/i.test(targets[0]!)) return null;
+    if (!targets.length || new Set(targets).size !== 1 || /[$`]/.test(targets[0]!)) return null;
+    const entry = path.resolve(path.dirname(bin), targets[0]!);
+    if (!fs.statSync(entry).isFile()) return null;
+    if (/\.[cm]?js$/i.test(entry)) return entry;
+    // 无扩展名的 node 入口（npm 包常见，如 codebuddy 的 bin/codebuddy）：确认是 node shebang 脚本才放行
+    if (!path.extname(entry)) {
+      const head = fs.readFileSync(entry, "utf8").slice(0, 64).split("\n")[0] ?? "";
+      if (head.startsWith("#!") && /node/.test(head)) return entry;
+    }
+    return null;
+  } catch { return null; }
+}
+
+/**
+ * Claude Code 等新版 npm 包的 shim 不再走 node+js，而是直接指向**原生 exe**
+ * （如 `& "$basedir/node_modules/@anthropic-ai/claude-code/bin/claude.exe" $args`）。
+ * 与 npmNodeEntry 同样的严格口径：只认标准 npm shim 头部 + 唯一 `.exe` 目标 +
+ * 目标里不许有插值字符，目标文件必须真实存在 —— 解析出来的就是被信任的可执行文件本体，
+ * 直接 spawn（不经任何 shell），参数照旧逐字传递。
+ */
+function npmExeEntry(bin: string): string | null {
+  try {
+    const stat = fs.statSync(bin);
+    if (!stat.isFile() || stat.size > 64 * 1024) return null;
+    const source = fs.readFileSync(bin, "utf8").replace(/\r\n/g, "\n");
+    if (!source.startsWith("#!/usr/bin/env pwsh\n") ||
+      !source.includes("$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent\n")) return null;
+    const targets = [...source.matchAll(/&\s+"(?:\$basedir\/)?(?:node\$exe"\s+"(?:\$basedir\/)?)?([^"\r\n]+\.exe)"\s+\$args\b/g)].map((m) => m[1]!);
+    if (!targets.length || new Set(targets).size !== 1 || /[$`]/.test(targets[0]!)) return null;
     const entry = path.resolve(path.dirname(bin), targets[0]!);
     if (!fs.statSync(entry).isFile()) return null;
     return entry;
@@ -512,8 +540,10 @@ export function executableInvocation(
     return { file: bin, args };
   }
   const entry = npmNodeEntry(bin);
-  if (!entry) throw new LocalAgentError("agent_windows_wrapper_unsupported", "Windows 仅支持原生 CLI 或标准 npm Node 启动器，请重新安装官方 CLI");
-  return { file: process.execPath, args: [entry, ...args] };
+  if (entry) return { file: process.execPath, args: [entry, ...args] };
+  const exe = npmExeEntry(bin);
+  if (exe) return { file: exe, args };
+  throw new LocalAgentError("agent_windows_wrapper_unsupported", "Windows 仅支持原生 CLI 或标准 npm 启动器（node+js 或原生 exe），请重新安装官方 CLI");
 }
 
 function oneLine(value: unknown): string | null {
@@ -1473,7 +1503,9 @@ export async function runLocalAgent(agent: LocalAgentId, opts: RunLocalAgentOpti
       opts.signal?.removeEventListener("abort", onAbort);
       // Windows may briefly retain a handle after process close. Retry within a
       // fixed bound; a persistent cleanup failure must never become success.
-      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      // 实测 CLI 退出后 descendants 偶发还握着 tmpDir 句柄几百毫秒（杀毒扫描更久），
+      // 默认 5×100ms 不够 → 拉长到 12×250ms（约 3 秒窗口），探测偶发 cleanup 失败即消失。
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 250 });
     };
     const finish = (fn: () => void) => {
       if (settled) return;
