@@ -114,6 +114,16 @@ test("Windows npm shim 指向无扩展名 node 入口时(CodeBuddy 形态)用 no
   // 入口内容不是 node shebang（比如随手一个文本文件）→ 仍然拒绝
   fs.writeFileSync(entry, "not a node script\n");
   assert.throws(() => executableInvocation(ps1, ["--version"], {}, "win32"), /标准 npm|原生/);
+  // shebang 收紧：node 前必须是 / 或空格（"xx-node-thing" 不算指向 node）
+  fs.writeFileSync(entry, "#!/usr/bin/env xx-node-thing\nconsole.log(1);\n");
+  assert.throws(() => executableInvocation(ps1, ["--version"], {}, "win32"), /标准 npm|原生/,
+    "伪 node shebang（xx-node-thing）不得放行");
+  // 入口带 UTF-8 BOM 不应误拒
+  fs.writeFileSync(entry, "\uFEFF#!/usr/bin/env node\nconsole.log(1);\n");
+  assert.doesNotThrow(() => executableInvocation(ps1, ["--version"], {}, "win32"));
+  // shim 自身带 BOM 也不应误拒
+  fs.writeFileSync(ps1, "\uFEFF" + '#!/usr/bin/env pwsh\n$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent\n& "node$exe"  "$basedir/node_modules/@tencent-ai/codebuddy-code/bin/codebuddy" $args\nexit $ret\n');
+  assert.doesNotThrow(() => executableInvocation(ps1, ["--version"], {}, "win32"));
 });
 
 // v1 的「Codex config.toml 隔离投影」与「研究线程关 Shell / 只读沙箱」两条已移到 local_agent_runtime.test.ts:
