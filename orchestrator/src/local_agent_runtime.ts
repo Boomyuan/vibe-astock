@@ -482,47 +482,54 @@ export async function saveCodeBuddyLocation(dataRoot: string, input: string | nu
  * The chosen installed CLI is trusted executable code, not a sandbox boundary.
  * Bypass PowerShell 5.1's native-argument rewriting (empty args / JSON quotes).
  */
-function npmNodeEntry(bin: string): string | null {
-  try {
-    const stat = fs.statSync(bin);
-    if (!stat.isFile() || stat.size > 64 * 1024) return null;
-    const source = fs.readFileSync(bin, "utf8").replace(/\r\n/g, "\n");
-    if (!source.startsWith("#!/usr/bin/env pwsh\n") ||
-      !source.includes("$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent\n")) return null;
-    const targets = [...source.matchAll(/&\s+"(?:\$basedir\/)?node\$exe"\s+"\$basedir\/([^"\r\n]+)"\s+\$args\b/g)].map((m) => m[1]!);
-    if (!targets.length || new Set(targets).size !== 1 || /[$`]/.test(targets[0]!)) return null;
-    const entry = path.resolve(path.dirname(bin), targets[0]!);
-    if (!fs.statSync(entry).isFile()) return null;
-    if (/\.[cm]?js$/i.test(entry)) return entry;
-    // 无扩展名的 node 入口（npm 包常见，如 codebuddy 的 bin/codebuddy）：确认是 node shebang 脚本才放行
-    if (!path.extname(entry)) {
-      const head = fs.readFileSync(entry, "utf8").slice(0, 64).split("\n")[0] ?? "";
-      if (head.startsWith("#!") && /node/.test(head)) return entry;
-    }
-    return null;
-  } catch { return null; }
-}
-
 /**
- * Claude Code 等新版 npm 包的 shim 不再走 node+js，而是直接指向**原生 exe**
- * （如 `& "$basedir/node_modules/@anthropic-ai/claude-code/bin/claude.exe" $args`）。
- * 与 npmNodeEntry 同样的严格口径：只认标准 npm shim 头部 + 唯一 `.exe` 目标 +
- * 目标里不许有插值字符，目标文件必须真实存在 —— 解析出来的就是被信任的可执行文件本体，
- * 直接 spawn（不经任何 shell），参数照旧逐字传递。
+ * 解析标准 npm pwsh shim 的唯一调用目标（绝对路径）。三种真实形态都认：
+ *   node+js 型      `& "$basedir/node$exe" "$basedir/cli.cjs" $args`
+ *   条件分支型      Test-Path 里外两支写法略异（npm 的 codebuddy.ps1），目标一致即通过
+ *   原生 exe 型     `& "$basedir/node_modules/@anthropic-ai/claude-code/bin/claude.exe" $args`
+ * 严格口径：标准 npm shim 头部（shebang + $basedir 行，容忍 UTF-8 BOM）+ 全文唯一目标 +
+ * 目标禁插值字符（$ 与反引号）+ 目标文件真实存在。目标是什么类型（js / exe /
+ * 无扩展名 node 脚本）由调用方各自校验；拿不到可信目标返回 null。
  */
-function npmExeEntry(bin: string): string | null {
+function npmShimTarget(bin: string): string | null {
   try {
     const stat = fs.statSync(bin);
     if (!stat.isFile() || stat.size > 64 * 1024) return null;
-    const source = fs.readFileSync(bin, "utf8").replace(/\r\n/g, "\n");
+    const source = fs.readFileSync(bin, "utf8").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
     if (!source.startsWith("#!/usr/bin/env pwsh\n") ||
       !source.includes("$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent\n")) return null;
-    const targets = [...source.matchAll(/&\s+"(?:\$basedir\/)?(?:node\$exe"\s+"(?:\$basedir\/)?)?([^"\r\n]+\.exe)"\s+\$args\b/g)].map((m) => m[1]!);
+    const targets = [...source.matchAll(/&\s+"(?:\$basedir\/)?(?:node\$exe"\s+"(?:\$basedir\/)?)?([^"\r\n]+)"\s+\$args\b/g)].map((m) => m[1]!);
     if (!targets.length || new Set(targets).size !== 1 || /[$`]/.test(targets[0]!)) return null;
     const entry = path.resolve(path.dirname(bin), targets[0]!);
     if (!fs.statSync(entry).isFile()) return null;
     return entry;
   } catch { return null; }
+}
+
+function npmNodeEntry(bin: string): string | null {
+  const entry = npmShimTarget(bin);
+  if (!entry) return null;
+  if (/\.[cm]?js$/i.test(entry)) return entry;
+  // 无扩展名的 node 入口（npm 包常见，如 codebuddy 的 bin/codebuddy）：首行必须是
+  // 指向 node 的 shebang 才放行 —— node 前须是 / 或空格（"xx-node-thing" 不算），
+  // 后须是空白或行尾；BOM 已剥，防误拒。
+  if (!path.extname(entry)) {
+    try {
+      const first = fs.readFileSync(entry, "utf8").replace(/^\uFEFF/, "").split("\n")[0] ?? "";
+      if (/^#!.*[\/ ]node(\s|$)/.test(first)) return entry;
+    } catch { return null; }
+  }
+  return null;
+}
+
+/**
+ * Claude Code 等新版 npm 包的 shim 不再走 node+js，而是直接指向**原生 exe**。
+ * 目标必须是 .exe —— 解析出来的就是被信任的可执行文件本体，直接 spawn
+ * （不经任何 shell），参数照旧逐字传递。
+ */
+function npmExeEntry(bin: string): string | null {
+  const entry = npmShimTarget(bin);
+  return entry && /\.exe$/i.test(entry) ? entry : null;
 }
 
 export function executableInvocation(
