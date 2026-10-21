@@ -38,6 +38,11 @@ export function watchNameOf(code: string): string | null {
   return names.get(code) ?? null;
 }
 
+/** 自选页显示用的名称:行情名 → 台账里存的名称 → 代码。显示、排序、提示文字都用这一个,免得排序和显示对不上 */
+export function watchDisplayName(code: string, quoteName?: string | null): string {
+  return quoteName || watchNameOf(code) || code;
+}
+
 /**
  * 🔴 慢快照不许覆盖新缓存:hydrate 在途时若有写入完成,先发的那次 hydrate 会带回
  *    **不含新记录的旧快照**,落地后表现为"刚存的东西不见了"。用序号丢弃过期结果。

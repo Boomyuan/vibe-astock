@@ -9,7 +9,7 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License: Apache-2.0" src="https://img.shields.io/badge/license-Apache--2.0-blue"></a>
-  <a href="CHANGELOG.md"><img alt="源码版本 v2.1.0" src="https://img.shields.io/badge/source-v2.1.0-F35D2B"></a>
+  <a href="CHANGELOG.md"><img alt="源码版本 v2.1.2" src="https://img.shields.io/badge/source-v2.1.2-F35D2B"></a>
   <img alt="A 股短线" src="https://img.shields.io/badge/market-A%20%E8%82%A1-c92a2a">
   <img alt="182 个数据端点" src="https://img.shields.io/badge/data-182%20endpoints-2f9e44">
   <img alt="AI：Claude Code、Codex、WorkBuddy 或模型 API" src="https://img.shields.io/badge/AI-Claude%20Code%20%7C%20Codex%20%7C%20WorkBuddy%20%7C%20API-black">
@@ -670,13 +670,14 @@ npm run build --prefix desktop
 .venv/bin/python -m pytest .agents/skills/data-access/scripts/tests -q
 ```
 
-最近本机验收记录（2026-10-11，v2.1.0 发布前）：
+最近本机验收记录（2026-10-18，v2.1.2 发布前，macOS）：
 
-- orchestrator：Node 26 运行全部后端测试，**1433 项：1429 通过、4 项 Windows 专项跳过**；类型检查通过。
-- desktop：**405/405**，类型检查与生产构建通过（构建只有 Vite 的打包体积提示）；Python（计算库 311、回测 583、数据脚本 783）：**1677/1677**；mypy 检查 115 个文件通过。
-- 发版前两轮独立只读审计（Codex 6.1 Sol、Opus 5.5）确认 4 条，都在合入的 Vibe Research 代码里，已修并随 Vibe Research v2.2.1 发布；修复补丁另做了一次独立复核（Opus 5.5），找到的 6 处全部修掉。每条修复都做了反向检查（把修复改回去，测试必须变红）。
+- orchestrator：Node 26 运行全部后端测试，**1443 项：1433 通过、8 项 Windows 专项跳过**；另有 2 项对时间敏感的测试在机器负载高时超时，所在文件单独重跑全部通过；类型检查通过。
+- desktop：**406/406**，类型检查与生产构建通过（构建只有 Vite 的打包体积提示）；Python（计算库 311、回测 583、数据脚本 783）：**1677/1677**；mypy 检查 115 个文件通过。
+- 发版前一轮独立只读审计（Codex 6.1 Sol）发现 5 条，修了 4 条；修复补丁另做一次复核（Codex 6.1 Sol）发现 3 条，修了 2 条（没修的 2 条和理由见 CHANGELOG）。CI 的 Windows 测试机又发现私密文件收紧不干净，修好后再复核一次（Codex 6.1 Sol），1 条已修。以上是 v2.1.1；v2.1.2 修的两处（拒绝规则、所有者）是把修复搬回 Vibe Research 时审计（Codex 6.1 Sol）发现的，修复补丁复核一次，没有新的严重或中等问题。关键修复都做了反向检查（把修复改回去，测试必须变红）。
+- v2.1.1、v2.1.2 修的都是 Windows 问题，但没有 Windows 实机：Windows 专项只在 GitHub 的 Windows 测试机上跑（它以管理员身份运行），「没以管理员身份运行时报错」这一条靠 PR 作者的实机反馈；v2.1.2 的删拒绝规则、改回所有者，在没以管理员身份运行时没有实测。
 - 上一版（v2.0.0）AI 复盘和 AI 周报用 Claude Code 订阅真跑过（2026-10-10 给 2026-10-09 写，复盘 4 版、周报 3 版；本版没改这两处，没有再真跑），程序的数字核对和证据编号核对都生效；从旧版导入用一份真实旧数据的副本实测过（没动原件）。
-- 盘前提醒用真实数据手动跑过（2026-10-11），还没在交易日 09:05 正点跑过；本轮未重跑全部外部取数端点或 Windows 实机；盯盘还没在交易时段实测（见「当前边界」）。
+- 盘前提醒用真实数据手动跑过（2026-10-11），还没在交易日 09:05 正点跑过；本轮未重跑全部外部取数端点；盯盘还没在交易时段实测（见「当前边界」）。
 
 项目约定：每个环节完成后先测试；重要改动做一次独立审查，逐条核实、修复后复验受影响范围；审查完成前不把
 该环节称为“建成”，也不提交或推送。

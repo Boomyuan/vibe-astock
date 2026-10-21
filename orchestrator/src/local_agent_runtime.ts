@@ -498,9 +498,17 @@ function npmShimTarget(bin: string): string | null {
     const source = fs.readFileSync(bin, "utf8").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
     if (!source.startsWith("#!/usr/bin/env pwsh\n") ||
       !source.includes("$basedir=Split-Path $MyInvocation.MyCommand.Definition -Parent\n")) return null;
-    const targets = [...source.matchAll(/&\s+"(?:\$basedir\/)?(?:node\$exe"\s+"(?:\$basedir\/)?)?([^"\r\n]+)"\s+\$args\b/g)].map((m) => m[1]!);
+    // 目标必须在 $basedir 下(npm 生成的 shim 都是这样);只有 node 本身可以是 "node$exe"(走 PATH)。
+    const targets = [...source.matchAll(/&\s+"(?:(?:\$basedir\/)?node\$exe"\s+")?\$basedir\/([^"\r\n]+)"\s+\$args\b/g)].map((m) => m[1]!);
     if (!targets.length || new Set(targets).size !== 1 || /[$`]/.test(targets[0]!)) return null;
-    const entry = path.resolve(path.dirname(bin), targets[0]!);
+    const base = path.dirname(bin);
+    const entry = path.resolve(base, targets[0]!);
+    // 解析后还要落在安装目录里(挡住 "$basedir/../x"、"$basedir/C:/x"):全局 shim 是它所在的目录,
+    // 项目里的 node_modules/.bin/x.ps1 指向上一层的 node_modules/<包>/。
+    const projectBin = path.basename(base).toLowerCase() === ".bin" && path.basename(path.dirname(base)).toLowerCase() === "node_modules";
+    const root = projectBin ? path.dirname(base) : base;
+    const rel = path.relative(root, entry);
+    if (!rel || rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) return null;
     if (!fs.statSync(entry).isFile()) return null;
     return entry;
   } catch { return null; }
@@ -1308,8 +1316,11 @@ export function parseCodeBuddyOutput(stdout: string): string {
     const value = item as { result?: unknown; response?: unknown; structured_output?: unknown; is_error?: unknown };
     if (value.is_error === true) throw new LocalAgentError("agent_failed", "CodeBuddy 本轮执行失败");
     if (value.structured_output !== undefined) return JSON.stringify(value.structured_output);
-    if (typeof value.result === "string" && value.result.trim()) return stripThinkTags(value.result);
-    if (typeof value.response === "string" && value.response.trim()) return stripThinkTags(value.response);
+    // 先清推理标签再判空:整段只有推理痕迹时按「没有可见回答」处理,不能返回空串冒充回答。
+    const result = typeof value.result === "string" ? stripThinkTags(value.result) : "";
+    if (result) return result;
+    const response = typeof value.response === "string" ? stripThinkTags(value.response) : "";
+    if (response) return response;
   }
   throw new LocalAgentError("agent_empty_output", "CodeBuddy 没有返回可见回答");
 }
@@ -1510,9 +1521,10 @@ export async function runLocalAgent(agent: LocalAgentId, opts: RunLocalAgentOpti
       opts.signal?.removeEventListener("abort", onAbort);
       // Windows may briefly retain a handle after process close. Retry within a
       // fixed bound; a persistent cleanup failure must never become success.
-      // 实测 CLI 退出后 descendants 偶发还握着 tmpDir 句柄几百毫秒（杀毒扫描更久），
-      // 默认 5×100ms 不够 → 拉长到 12×250ms（约 3 秒窗口），探测偶发 cleanup 失败即消失。
-      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 12, retryDelay: 250 });
+      // 实测 CLI 退出后 descendants 偶发还握着 tmpDir 句柄几百毫秒（杀毒扫描更久）。
+      // rmSync 的重试是同步等待、每次多等 retryDelay（第 n 次等 n×retryDelay），期间整个服务停住：
+      // 7×100ms 累计最多 2.8 秒（原来 5×100ms 是 1.5 秒），别再往上加。
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 7, retryDelay: 100 });
     };
     const finish = (fn: () => void) => {
       if (settled) return;

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { backend } from "../src/verticals/finance/lib/backend.ts";
-import { addWatch, hydrateWatch, loadWatch, saveWatch } from "../src/verticals/finance/lib/watchlist.ts";
+import { addWatch, hydrateWatch, loadWatch, saveWatch, watchDisplayName } from "../src/verticals/finance/lib/watchlist.ts";
 
 /** 内存台账；每次写都慢一拍，好让第二次添加在第一次写完之前发出 */
 function fakeLedger() {
@@ -63,4 +63,22 @@ test("🔴 加自选时读台账失败、补读也失败：这只从缓存撤掉
     assert.deepEqual(loadWatch().sort(), ["600519", "AAPL"].sort());
     backend.ledgerSave = save;
   } finally { backend.ledger = ok; f.restore(); }
+});
+
+test("自选名称:行情没回来时用台账里存的名称,都没有才显示代码", async () => {
+  const original = backend.ledger;
+  backend.ledger = async () => ({ records: { watch: [
+    { id: "w1", symbol: "600519", name: "贵州茅台" },
+    { id: "w2", symbol: "00700" },
+    { id: "w3", symbol: "600519", name: "重复的一条" },
+  ] } }) as never;
+  try {
+    await hydrateWatch();
+    assert.equal(watchDisplayName("600519"), "贵州茅台", "行情没回来:用台账名称");
+    assert.equal(watchDisplayName("600519", "茅台(行情)"), "茅台(行情)", "行情名优先");
+    assert.equal(watchDisplayName("00700"), "00700", "台账也没名称:显示代码");
+    assert.equal(watchDisplayName("AAPL", ""), "AAPL", "空的行情名不算");
+  } finally {
+    backend.ledger = original;
+  }
 });
