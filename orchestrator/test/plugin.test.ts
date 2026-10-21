@@ -497,6 +497,11 @@ test("回测工具由服务端带上 charts 界面参数（图表序列只给界
   assert.deepEqual(FINANCE_PLUGIN.tools?.backtest?.uiArgs, { charts: true });
 });
 
+test("模拟盘是确定性工具：不接 AI 也能跑，且不抢回测的第一位", () => {
+  assert.equal(FINANCE_PLUGIN.tools?.paper?.module, "backtest.paper");
+  assert.equal(FINANCE_PLUGIN.tools?.paper?.requiresAgent, false);
+});
+
 test("K 线工具没接 AI 也能用，且不是对话式工具列表的第一个", () => {
   assert.equal(FINANCE_PLUGIN.tools?.kline?.module, "backtest.kline");
   assert.equal(FINANCE_PLUGIN.tools?.kline?.requiresAgent, false);

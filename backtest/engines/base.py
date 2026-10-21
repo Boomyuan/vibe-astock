@@ -405,6 +405,13 @@ class BaseEngine(ABC):
         self.position_adjustment = str(config.get("position_adjustment", "hold")).lower()
         if self.position_adjustment not in {"hold", "rebalance"}:
             raise ValueError("position_adjustment must be 'hold' or 'rebalance'")
+        #: 期末是否把还能卖的持仓按最后一天收盘价平掉。回测默认平（净值落回现金）；
+        #: 模拟盘传 False —— 它跑到今天是为了看「现在持有什么」，平掉就什么都看不到了
+        #: （见 backtest/paper.py）。不校验的话写错成字符串会被当 True，静默走回默认行为。
+        close_at_end = config.get("close_positions_at_end", True)
+        if not isinstance(close_at_end, bool):
+            raise ValueError(f"close_positions_at_end 要是布尔值，收到 {close_at_end!r}")
+        self.close_positions_at_end = close_at_end
         # Relative drift band around the target weight. Zero reproduces the
         # historical behaviour, where the only thing separating "resize" from
         # "leave it alone" was the slippage width -- measured, a 0.01% daily
@@ -1095,7 +1102,9 @@ class BaseEngine(ABC):
 
         # f. 期末结算：能卖的按最后一天收盘价平掉；卖不了的（没有行情、T+1、收盘跌停等，见
         #    end_settlement_block）不编一笔成交，按收盘价估值留在期末净值里，并在 metrics 里点名（审计 D2）。
-        if len(dates) > 0:
+        #    close_positions_at_end=False 时整段跳过：持仓留着，最后一根 bar 上算好的净值快照
+        #    （上面那一步）就是期末状态 —— 模拟盘要的正是这个。
+        if len(dates) > 0 and self.close_positions_at_end:
             _last_row = min(self._bar_idx, len(dates) - 1)
             last_ts = dates[_last_row]
             for c in list(self.positions.keys()):

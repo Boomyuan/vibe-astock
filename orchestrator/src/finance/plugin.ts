@@ -347,6 +347,10 @@ export const FINANCE_PLUGIN: Plugin = {
   tools: {
     // uiArgs.charts：界面要画净值 / 回撤 / 月度图，回测把逐日序列放进 result.ui_only，不进 Agent 上下文
     backtest: { label: "回测", module: "backtest.cli", requiresAgent: true, timeoutMs: 300_000, uiArgs: { charts: true } },
+    // 模拟盘：把**同一个**回测引擎向前跑到今天（close_positions_at_end=false，期末不平仓），
+    // 于是它的期末状态就是账户现状：持有什么、值多少钱、明天开盘该动什么。
+    // 不另写一套撮合，市场规则与回测共用同一份实现。要取数年日线再逐 bar 撮合，与回测同级。
+    paper: { label: "模拟盘", module: "backtest.paper", requiresAgent: false, timeoutMs: 300_000 },
     // 🔴 让**界面也能调到确定性计算库**，而不是自己再抄一份公式。
     //    此前 desktop 的 api.ts 手写了 PE / CAGR / PEG / 消化年数 ——
     //    于是 `calc/` 里改对了口径，桌面端不会跟着变（"两套事实与计算链路"）。
