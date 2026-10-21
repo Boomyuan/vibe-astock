@@ -257,11 +257,52 @@ const mul = (v: number | null, k: number): number | null => (v === null ? null :
 const subtract = (a: number | null, b: number | null): number | null => (a === null || b === null ? null : a - b);
 /* ---------- 行情 / 估值 ---------- */
 
+/**
+ * 编排器限制单个 args 数组最长 50（orchestrator/src/service.ts 的 MAX_ARG_ARR），
+ * 自选超过 50 只时整个 codes 数组会被 400「args.codes 数组过长」拒掉，
+ * 页面表现为「行情获取失败」且点刷新也没用。这里按 50 一片并行请求，证据平铺合并成一个大信封。
+ * 合并后的 status 取各片里最差的一片：有一片 failed 就不算全 ok，partial 照实保留。
+ */
+const QUOTE_BATCH_SIZE = 50;
+async function quotesEnvelopeBatched(queries: string[], refresh: boolean): Promise<Envelope> {
+  if (queries.length <= QUOTE_BATCH_SIZE) {
+    return env("tx_quotes_batch", { args: { codes: queries }, refresh });
+  }
+  const chunks: string[][] = [];
+  for (let i = 0; i < queries.length; i += QUOTE_BATCH_SIZE) {
+    chunks.push(queries.slice(i, i + QUOTE_BATCH_SIZE));
+  }
+  const parts = await Promise.all(chunks.map((codes) => env("tx_quotes_batch", { args: { codes }, refresh })));
+  const head = parts[0];
+  if (!head) {
+    // queries.length > 50 时 chunks 至少两片,parts 不会为空;这里只为类型完备兜一个 failed 信封
+    return { script: "tx_quotes_batch", symbol: "", market: "", status: "failed", fetched_at: new Date().toISOString(),
+      primary_source: null, used_sources: [], evidence: [], errors: [], missing: [] };
+  }
+  const rank: Record<string, number> = { ok: 0, partial: 1, failed: 2 };
+  let worst = head;
+  for (const p of parts) {
+    if ((rank[p.status] ?? 2) > (rank[worst.status] ?? 2)) worst = p;
+  }
+  return {
+    script: worst.script,
+    symbol: worst.symbol,
+    market: worst.market,
+    status: worst.status,
+    fetched_at: worst.fetched_at,
+    primary_source: worst.primary_source,
+    used_sources: worst.used_sources,
+    evidence: parts.flatMap((p) => p.evidence),
+    errors: parts.flatMap((p) => p.errors),
+    missing: parts.flatMap((p) => p.missing),
+  };
+}
+
 async function quoteMap(codes: string[], refresh = false): Promise<Record<string, Quote>> {
   const canonical = [...new Set(codes.map(normalizeMarketSymbol).filter((c): c is string => c !== null))];
   const queries = canonical.map(quoteQueryOfSymbol).filter((c): c is string => c !== null);
   if (!queries.length) return {};
-  const e = await env("tx_quotes_batch", { args: { codes: queries }, refresh });
+  const e = await quotesEnvelopeBatched(queries, refresh);
   const out: Record<string, Quote> = {};
   for (const r of rows(e)) {
     const symbol = symbolFromQuoteKey(r.key);

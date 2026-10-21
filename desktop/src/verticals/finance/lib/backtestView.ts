@@ -256,6 +256,7 @@ export function costSummary(c: Exclude<CostCompare, { error: string }>): string 
 const PARAM_LABEL: Record<string, string> = {
   fast: "快线天数", slow: "慢线天数", buy_below: "RSI 低于此值买入", sell_above: "RSI 高于此值卖出", window: "RSI 天数",
   n: "RSRS 回归天数", m: "RSRS 标准化窗口", threshold: "RSRS 阈值",
+  lookback: "动量天数", top: "持仓只数", ma_filter: "均线过滤天数(0=关)", rebalance: "调仓间隔(交易日)",
 };
 export const paramLabel = (p: string): string => PARAM_LABEL[p] ?? p;
 
