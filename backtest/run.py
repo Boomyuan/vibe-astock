@@ -111,6 +111,16 @@ class _Guarded:
         self.inner, self.plan = inner, plan
         self.name = getattr(inner, "name", type(inner).__name__)
         self.note: str = ""
+        # 调仓型策略（如动量轮动）遇上 hold 口径：引擎只执行方向翻转和归零，同向调仓会被丢掉。
+        # 报告里的 rebalance 次数照旧，成交却对不上 —— 跑出来的是另一个策略。
+        # 放在这里拦：取数之前，免得白等一轮取数才被告知。
+        if getattr(inner, "needs_rebalance", False) and plan.style.position_adjustment != "rebalance":
+            raise BacktestNotValid(
+                f"{self.name}靠定期调仓换标的，而「{plan.style.label}」口径（position_adjustment="
+                f"{plan.style.position_adjustment}）只执行方向翻转和归零，同向调仓会被引擎丢掉 —— "
+                "跑出来的是「只剩第一笔建仓」的版本，不是这个策略。"
+                "改用 position_adjustment=rebalance 的口径（如「短线 / 波段」）再跑。"
+            )
 
     def generate(self, data_map: Dict[str, pd.DataFrame]) -> Dict[str, pd.Series]:
         # ① 样本够不够 —— 按**实际 bar 数**，不是按日历估的那个数。
@@ -229,6 +239,10 @@ def run(plan: Plan | Refusal, strategy: Strategy, run_dir: Optional[Path] = None
         logger.warning("以下标的没有参与回测：%s", ", ".join(missing))
 
     notes = list(plan.notes)
+    # 取数层的运行期说明（如「A 股主源不可达，已换源」）必须是**结果的一部分**：
+    # 日志在服务端 / Notebook / 界面里对用户不可见，而换源会改变数字的口径。
+    # cli.py 会把 notes 里不属于 plan.notes 的那些汇进 required_disclosures。
+    notes.extend(getattr(loader, "notes", None) or [])
     if guarded.note:
         notes.append(guarded.note)
     # 策略自己的口径（如 RSRS 的方法出处、预热期、平仓记录太少）：要拿到成交结果才写得出来

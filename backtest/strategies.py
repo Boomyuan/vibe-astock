@@ -198,9 +198,123 @@ class Rsrs:
         return [text]
 
 
+class MomentumRotation:
+    """动量轮动：在趋势向上的标的里挑动量最强的几只等权持有，按固定间隔调仓。
+
+    和其他内置策略不同，这是**截面**策略 —— 要同时看所有标的才能排序：
+
+    1. 动量分 = 最近 ``lookback`` 个交易日的涨幅（``close / close.shift(lookback) - 1``）
+    2. ``ma_filter > 0`` 时做趋势过滤：只保留收盘价在自己 ``ma_filter`` 日均线上方的标的
+    3. 每隔 ``rebalance`` 个交易日看一次：合格标的按动量分降序取前 ``top`` 只，等权；
+       一只都不合格就**空仓**（这是它躲开熊市的方式，不是"随便留一只"）
+    4. 两次调仓之间保持上一次的目标权重不动
+
+    🔴 **必须用 rebalance 口径跑**（``style="swing"``）。``hold`` 口径只执行方向翻转和归零，
+       同向调仓会被丢掉 —— 轮动就只剩第一笔建仓，而报告里的 rebalance 次数照旧，成交却对不上。
+       这条由 ``_Guarded`` 在取数之前拦住（看 ``needs_rebalance``），不会静默跑出一份看着正常的报告。
+
+    🔴 调仓日程是**从区间第一根起算的固定间隔**，不是"每 N 天恰好出现一次信号"：
+       起点挪一天，调仓日整体跟着挪，结果会变。这是这类策略的固有性质，不是实现取巧。
+
+    🔴 预热：前 ``max(lookback, ma_filter)`` 根算不出动量分 / 均线，这段时间不持有。
+       收益、年化、夏普按整个区间算，含这段空仓的时间，而对照基准这段时间是持有的。
+
+    🔴 动量分打平时按 ``data_map`` 里的标的顺序取前者：确定，但换一批标的顺序结果可能不同。
+    """
+
+    #: 调仓是它的全部收益来源，`hold` 口径会把调仓丢掉 —— 见类说明
+    needs_rebalance = True
+    #: 平仓记录少于这个数，报告里写明结论说明不了有效还是无效
+    MIN_TRADES = 10
+    warmup_remedy = "把均线过滤窗口调短，或把起点往前挪"
+
+    def __init__(self, lookback: int = 20, top: int = 2, ma_filter: int = 60, rebalance: int = 5) -> None:
+        if not isinstance(lookback, int) or isinstance(lookback, bool) or lookback < 1:
+            raise ValueError(f"动量窗口要是 ≥1 的整数，收到 {lookback!r}")
+        if not isinstance(top, int) or isinstance(top, bool) or top < 1:
+            raise ValueError(f"持仓只数要是 ≥1 的整数，收到 {top!r}")
+        if not isinstance(ma_filter, int) or isinstance(ma_filter, bool) or ma_filter < 0:
+            raise ValueError(f"均线过滤窗口要是 ≥0 的整数（0 = 关掉过滤），收到 {ma_filter!r}")
+        # 1 日均线就是收盘价本身，`close > ma` 永远不成立 ⇒ 全程空仓。
+        # 这种参数不报错，只会安静地跑出一份零成交的报告。
+        if ma_filter == 1:
+            raise ValueError("均线过滤窗口不能是 1：1 日均线等于收盘价，过滤永远不成立，会一直空仓")
+        if not isinstance(rebalance, int) or isinstance(rebalance, bool) or rebalance < 1:
+            raise ValueError(f"调仓间隔要是 ≥1 的整数，收到 {rebalance!r}")
+        self.lookback, self.top = lookback, top
+        self.ma_filter, self.rebalance = ma_filter, rebalance
+        self.name = (
+            f"动量轮动（{lookback} 日动量 / 取前 {top}"
+            + (f" / MA{ma_filter} 过滤" if ma_filter else " / 不过滤")
+            + f" / 每 {rebalance} 日调仓）"
+        )
+        #: 第一个能出读数的位置：动量和均线谁先齐就用谁
+        self.warmup_bars = max(lookback, ma_filter)
+
+    def _pick(self, score_row: pd.Series, ok_row: pd.Series) -> List[str]:
+        """当天该持哪几只。动量分缺失（预热期 / 停牌）或不合格的一律不选。"""
+        s = score_row.dropna()
+        if s.empty:
+            return []
+        ok = ok_row.reindex(s.index).fillna(False).astype(bool)
+        s = s[ok]
+        if s.empty:
+            return []
+        # nlargest 打平时保留先出现的那个 ⇒ 按 codes 顺序取前者，确定但依赖标的顺序
+        return list(s.nlargest(self.top).index)
+
+    def generate(self, data_map: Dict[str, pd.DataFrame]) -> Dict[str, pd.Series]:
+        codes = list(data_map)
+        if not codes:
+            return {}
+        # 每只票在自己的索引上算动量和均线，**再**对齐 —— 反过来先拼成矩阵再 shift，
+        # 一只票停牌几天就会让别人少算几天（shift 数的是行，不是交易日）。
+        close_by_code = {c: pd.to_numeric(data_map[c]["close"], errors="coerce").astype(float) for c in codes}
+        score = pd.DataFrame({c: s / s.shift(self.lookback) - 1.0 for c, s in close_by_code.items()})
+        if self.ma_filter:
+            close = pd.DataFrame(close_by_code)
+            ma = pd.DataFrame({
+                c: s.rolling(self.ma_filter, min_periods=self.ma_filter).mean()
+                for c, s in close_by_code.items()
+            })
+            eligible = (close > ma) & score.notna()
+        else:
+            eligible = score.notna()
+
+        idx = score.index
+        # 先铺满 NaN，再只写调仓日，最后 ffill —— 中间的日子要能"保持上一次"，写 0 就变成空仓了
+        target = pd.DataFrame(index=idx, columns=codes, dtype=float)
+        for t in idx[:: self.rebalance]:
+            picked = self._pick(score.loc[t], eligible.loc[t])
+            target.loc[t] = 0.0
+            if picked:
+                target.loc[t, picked] = 1.0 / len(picked)
+        target = target.ffill().fillna(0.0)
+
+        return {c: target[c].reindex(data_map[c].index).ffill().fillna(0.0) for c in codes}
+
+    def result_notes(self, metrics: Dict[str, Any]) -> List[str]:
+        """回测跑完后要写进口径的话：方法、调仓日程的性质、预热期、平仓记录太少时结论不可靠。合成一条。"""
+        text = (
+            f"动量轮动按截面做法：每天算每只标的最近 {self.lookback} 个交易日的涨幅，"
+            + (f"只保留收盘价在自己 {self.ma_filter} 日均线上方的标的，" if self.ma_filter else "不做趋势过滤，")
+            + f"每隔 {self.rebalance} 个交易日按涨幅降序取前 {self.top} 只等权持有，一只都不合格就空仓，"
+            "两次调仓之间不动仓位。调仓日程从区间第一根起算，起点挪一天调仓日整体跟着挪，结果会变；"
+            "动量分打平时按标的顺序取前者。"
+            f"前 {self.warmup_bars} 根日线算不出指标、这段时间不持有，"
+            "收益、年化、夏普按整个区间算，含这段空仓的时间，而对照基准这段时间是持有的。"
+        )
+        tc = metrics.get("trade_count")
+        if isinstance(tc, int) and not isinstance(tc, bool) and tc < self.MIN_TRADES:
+            text += ("本次没有一条平仓记录，" if tc == 0 else f"本次只有 {tc} 条平仓记录，少于 {self.MIN_TRADES} 条，") + \
+                "结果说明不了这个方法有效还是无效。"
+        return [text]
+
+
 BUILTIN: Dict[str, Callable[..., Strategy]] = {
     "buy_and_hold": BuyAndHold,
     "ma_cross": MaCross,
     "rsi_reversion": RsiReversion,
     "rsrs": Rsrs,
+    "momentum_rotation": MomentumRotation,
 }

@@ -109,6 +109,19 @@ def _catalog() -> dict:
                      f"前 n+m-1 根日线只用来算指标、不持有（默认 {rsrs_warm} 根），所以区间要比别的策略长：默认参数下"
                      + "、".join(f"{STYLES[k].label}至少 {STYLES[k].min_bars + rsrs_warm} 根日线（约 {round((STYLES[k].min_bars + rsrs_warm) / 245 * 2) / 2:g} 年）"
                                 for k in ("swing", "long")) + "。只用于历史回测，不给当天的读数。"},
+            {"key": "momentum_rotation", "label": "动量轮动",
+             "params": {"lookback": {"default": 20, "label": "动量窗口"},
+                        "top": {"default": 2, "label": "持仓只数"},
+                        "ma_filter": {"default": 60, "label": "均线过滤(0=关)"},
+                        "rebalance": {"default": 5, "label": "调仓间隔"}},
+             "note": "截面策略：每隔 rebalance 个交易日，在收盘价站上自己 ma_filter 日均线的标的里，"
+                     "按最近 lookback 个交易日的涨幅降序取前 top 只等权持有；一只都不合格就不持有，"
+                     "两次调仓之间不动权重；ma_filter=0 表示不做趋势过滤。"
+                     "🔴 必须配 position_adjustment=rebalance 的口径（如「短线 / 波段」）——"
+                     "hold 口径会把同向调仓丢掉，只剩第一笔持仓，引擎会直接拒绝这次运行而不是照跑。"
+                     "调仓日程从区间第一根起算，起点挪一天结果会变。"
+                     "前 max(lookback, ma_filter) 根日线只算指标、不持有（默认 60 根）。"
+                     "只用于历史回测，不输出当天的读数。"},
         ],
         # 不是参数、但每次运行都会有的东西。不写进来，Agent 只看 input_schema 会以为「没有基准、不能画图」，
         # 反过来劝用户另跑一次 ETF 当对照（真机测试里出现过）。

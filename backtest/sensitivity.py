@@ -58,6 +58,12 @@ def _axes(key: str, params: Dict[str, Any]) -> Optional[Tuple[str, List[Any], st
     if key == "rsrs":
         n, t = int(params.get("n", 18)), float(params.get("threshold", 0.7))
         return "n", _int_axis(n, 3), "threshold", _threshold_axis(t), {"m": int(params.get("m", 600))}
+    if key == "momentum_rotation":
+        # 轮动最值得看的两轴：动量窗口 × 持仓只数（只数越少越集中，回撤会明显变大）。
+        # 均线过滤和调仓间隔固定不动 —— 四个参数一起扫是 7×7×7×7，且那张网格是过拟合的温床。
+        lb, tp = int(params.get("lookback", 20)), int(params.get("top", 2))
+        return ("lookback", _int_axis(lb, 5), "top", _int_axis(tp, 1),
+                {"ma_filter": int(params.get("ma_filter", 60)), "rebalance": int(params.get("rebalance", 5))})
     return None
 
 
