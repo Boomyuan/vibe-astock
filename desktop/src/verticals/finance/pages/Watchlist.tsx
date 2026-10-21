@@ -5,7 +5,7 @@ import { PageHeader } from "@/components/ui/PageHeader";
 import { useAiPage } from "../../../core/ai/pageContext";
 import { GlassCard } from "@/components/ui/GlassCard";
 import { Disclaimer } from "@/components/ui/Disclaimer";
-import { loadWatch, saveWatch } from "@/lib/watchlist";
+import { loadWatch, saveWatch, watchDisplayName, watchNameOf } from "@/lib/watchlist";
 import { currencyOfSymbol, normalizeMarketSymbol } from "@/lib/marketSymbol";
 import { backend } from "@/lib/backend";
 import {
@@ -30,7 +30,7 @@ const LIVE_KEY = "vr-watchlist-live";
 type WatchQuote = ReturnType<typeof useLiveQuotes>["quotes"][string] | undefined;
 /** 自选总览的列：现价不同币种分开排（100 港元和 100 元不比大小），其余直接比 */
 const WATCH_COLS: { key: string; label: string; firstDir?: SortDir; right?: boolean; byCurrency?: boolean; value: (c: string, q: WatchQuote) => SortValue }[] = [
-  { key: "name", label: "名称", firstDir: "asc", value: (c, q) => q?.name || c },
+  { key: "name", label: "名称", firstDir: "asc", value: (c, q) => watchDisplayName(c, q?.name) },
   { key: "code", label: "代码", firstDir: "asc", value: (c) => c },
   { key: "price", label: "现价", right: true, byCurrency: true, value: (_c, q) => q?.price },
   { key: "change_pct", label: "涨跌%", right: true, value: (_c, q) => q?.change_pct },
@@ -360,8 +360,8 @@ export function Watchlist({ tabs }: { tabs?: ReactNode } = {}) {
                         sel && "bg-primary/10 shadow-[inset_2px_0_0_hsl(var(--primary))] hover:bg-primary/15")}>
                       <td className="px-2 py-2.5 font-medium">
                         <button type="button" aria-pressed={sel} onClick={(e) => { e.stopPropagation(); setPicked(c); }}
-                          title={`在下面看 ${q?.name || c} 的 K 线`}
-                          className={cn("rounded text-left outline-none focus-visible:ring-1 focus-visible:ring-primary/60", sel && "text-primary")}>{q?.name || c}</button>
+                          title={`在下面看 ${watchDisplayName(c, q?.name)} 的 K 线`}
+                          className={cn("rounded text-left outline-none focus-visible:ring-1 focus-visible:ring-primary/60", sel && "text-primary")}>{watchDisplayName(c, q?.name)}</button>
                         {held?.has(c) && <span className="ml-1.5 rounded bg-primary/15 px-1 py-0.5 text-[10px] font-normal text-primary">持有</span>}
                       </td>
                       <td className="whitespace-nowrap px-2 py-2.5 font-mono text-xs text-muted-foreground">
@@ -378,7 +378,7 @@ export function Watchlist({ tabs }: { tabs?: ReactNode } = {}) {
                           onClick={(e) => { e.stopPropagation(); remove(c); }}
                           className="text-muted-foreground/50 hover:text-destructive"
                           title="移除"
-                          aria-label={`从自选移除 ${q?.name || c}`}
+                          aria-label={`从自选移除 ${watchDisplayName(c, q?.name)}`}
                         >
                           <X className="h-3.5 w-3.5" />
                         </button>
@@ -395,7 +395,7 @@ export function Watchlist({ tabs }: { tabs?: ReactNode } = {}) {
       </GlassCard>
 
       {current && (
-        <KlineCard symbol={normalizeMarketSymbol(current) ?? current} title={quotes[current]?.name}
+        <KlineCard symbol={normalizeMarketSymbol(current) ?? current} title={quotes[current]?.name || watchNameOf(current) || undefined}
           action={<Link to={`/research?symbol=${encodeURIComponent(current)}`} title="在个股页看财报、事件回看和研究"
             className="inline-flex items-center gap-1 whitespace-nowrap text-xs text-primary hover:underline">个股页<ArrowRight className="h-3.5 w-3.5" /></Link>} />
       )}
