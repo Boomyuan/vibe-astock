@@ -90,8 +90,11 @@ class LoaderError(RuntimeError):
 def price_basis(market: str) -> str:
     """Source-specific price/accounting limits, shared by preview and runtime disclosure."""
     source = (
-        "A 股取 baostock 前复权日线（adjustflag=2），不是当日未复权成交价；复权影响不等于分红现金到账。"
-        "涨跌停另取不复权开盘价和前收，按交易所规则四舍五入到分判定。"
+        # 口径文案**不写死厂商**：A 股主源是 baostock，它不可达时会退到腾讯（见 _a_share_tencent）。
+        # 在这里点名 baostock，换源之后这段话就会撒谎 —— 而披露撒谎比取不到数更糟。
+        # 厂商属于 provenance.endpoint：那里是逐次记录的实际取值处，不随实现漂移。
+        "A 股取前复权日线（按复权因子等比换算，不是逐次减分红的等差口径），不是当日未复权成交价；"
+        "复权影响不等于分红现金到账。涨跌停另取不复权开盘价和前收，按交易所规则四舍五入到分判定。"
         if market == "a_share" else
         "港美股取 Yahoo chart 的 indicators.quote OHLC，不使用 adjclose；不可把它当作含分红的总回报序列。"
     )
@@ -377,6 +380,39 @@ def _frame_from_yahoo(payload: Dict[str, Any], tz: Optional[str] = None) -> tupl
     return df, before - len(df)
 
 
+def _frame_from_tencent(payload: Dict[str, Any], window: Optional[tuple[str, str]] = None) -> tuple[pd.DataFrame, int]:
+    """腾讯 K 线的 raw（信封里 ``extracted_`` 那份，翻页已拼好）→ OHLCV 帧。
+
+    返回 ``(帧, 剔除根数)``。没有 close、或 close 不可解析的行是停牌 / 空档，
+    那几天的价不是可成交价，剔除；剔了多少要**说出来**，与 baostock 那条路一个口径。
+
+    ``window`` 给了就先切到该区间再剔除，**剔除数按区间算** —— 取前收要往前多拿一段
+    （见 ``_a_share_tencent``），但「停牌几根」说的是请求区间里的事，
+    把 lookback 那几根算进来就多报了。
+
+    🔴 取回来的是**不复权**价（调用方传 ``adjust: ""``）。要前复权得自己按复权因子
+       换算，见 ``VibeLoader._a_share_tencent`` —— 腾讯自带的 qfq 是等差减分红口径，
+       高分红股早年价格会被减成负数，不能用。
+    """
+    rows = payload.get("rows") or []
+    if not rows:
+        return pd.DataFrame(), 0
+    df = pd.DataFrame(rows)
+    if "date" not in df.columns:
+        raise LoaderError("腾讯 K 线的 raw 里没有 date 列")
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.set_index("date").sort_index()
+    keep = [c for c in ("open", "high", "low", "close", "volume") if c in df.columns]
+    if "close" not in keep:
+        raise LoaderError("腾讯 K 线的 raw 里没有 close 列")
+    df = df[keep]
+    if window is not None:
+        df = df.loc[str(window[0]):str(window[1])]
+    before = len(df)
+    df = df[pd.to_numeric(df["close"], errors="coerce") > 0]
+    return df, before - len(df)
+
+
 def _yahoo_range(start: str, end: str) -> str:
     """覆盖得住请求区间的最小窗口关键字。"""
     try:
@@ -458,6 +494,22 @@ def _assert_same_instrument(code: str, payload: dict) -> None:
         )
 
 
+def _sina_adjust_helpers():
+    """按需把取数层加进 ``sys.path``，再导入新浪复权工具。
+
+    换算公式只有 ``sources.sina.apply_adjust`` 这一份，回测与 K 线工具共用 ——
+    不在这里另写一遍等比换算，否则两条路迟早会算出不一样的前复权价。
+
+    不放在模块级：loader 是被 import 得最早的模块之一，不该为了一个兜底路径
+    在 import 期改全局 ``sys.path``。
+    """
+    scripts = REPO_ROOT / ".agents" / "skills" / "data-access" / "scripts"
+    if str(scripts) not in sys.path:
+        sys.path.insert(0, str(scripts))
+    from sources.sina import apply_adjust, parse_adjust_factor_js  # noqa: PLC0415
+    return apply_adjust, parse_adjust_factor_js
+
+
 class VibeLoader:
     """回测引擎眼里的"数据源"。
 
@@ -487,6 +539,25 @@ class VibeLoader:
         #: 取不到的 (代码, 起, 止) 也记下，同一个实例里不再重取（原因已经留在 failures / benchmark_failures）——
         #: 否则敏感度网格每一格都要再等一次超时，重取成功的格子用的也和主回测不是同一份数据
         self._failed: set = set()
+        #: 取数层面的运行期说明（如「主源不可达，已换源」）。run.py 会汇进 Result.notes，
+        #: 最终进 required_disclosures —— 换源这件事不能只写在日志里。
+        self.notes: List[str] = []
+        #: 换源只 announce 一次：同一个实例会被敏感度网格复用，每格都加一条会把披露刷爆
+        self._switched_source = False
+
+    def _announce_source_switch(self, why: str) -> None:
+        """A 股主源不可达、退到腾讯时**出声**。
+
+        静默换源的危险不是数字变差，而是**读的人以为还是主源**：同一份报告里
+        口径已经换了，收益和回撤却和主源的结果并排放着比较。
+        """
+        if self._switched_source:
+            return
+        self._switched_source = True
+        self.notes.append(
+            f"A 股主源 baostock 本次不可达（{why}），已退到腾讯 K 线：不复权日 K + 新浪复权因子等比换算。"
+            "换源后的序列与主源口径不完全可比，与主源结果之间的差异不全是策略造成的。"
+        )
 
     # ── 引擎调的就是这一个 ──
     def fetch(self, codes: Iterable[str], start_date: str, end_date: str,
@@ -573,14 +644,9 @@ class VibeLoader:
             got = {str(r.get("code") or "") for r in rows}
             if got != {spec.symbol}:
                 raise LoaderError(f"要的是 {spec.symbol}，取回来的是 {sorted(got) or '空'} —— 不是同一个指数，已中止")
-            df = pd.DataFrame(rows)
+            df, dropped = _frame_from_tencent(payload)
             if df.empty:
                 return df, SymbolProvenance(code=spec.ticker, market=spec.market, endpoint=spec.endpoint, raw_refs=refs)
-            df["date"] = pd.to_datetime(df["date"])
-            df = df.set_index("date").sort_index()[["open", "high", "low", "close", "volume"]]
-            before = len(df)
-            df = df[pd.to_numeric(df["close"], errors="coerce") > 0]
-            dropped = before - len(df)
         else:
             payload = _read_raw(self.out_dir, refs[0]) if refs else {}
             meta = (((payload.get("chart") or {}).get("result") or [{}])[0].get("meta") or {})
@@ -630,6 +696,130 @@ class VibeLoader:
         note = f"{gaps} 根没有不复权价，这几天的涨跌停按复权价近似判定" if gaps else ""
         return df, [f"unadjusted/{r}" for r in refs], note
 
+    def _a_share_baostock(self, code: str, start_date: str, end_date: str):
+        """A 股主源：baostock 前复权日线，另取一份不复权开盘价 / 前收给涨跌停判定。"""
+        endpoint = "bs_kline_qfq"
+        args = {"start_date": start_date, "end_date": end_date, "fields": _A_FIELDS}
+        # 🔴 传**带后缀**的写法。只传六位的话端点会用自己的规则重判，
+        #    而它的规则与我们的不一定一致 —— 实测 000001 被判成平安银行(sz)，
+        #    要上证综指(sh)的人会拿到一只银行股，**全程不报错**。
+        env = _run_fetch(endpoint, code, args, self.out_dir, self.python, self.timeout)
+        if env.get("status") == "failed":
+            raise LoaderError(f"{endpoint} 返回 failed：{env.get('note') or '未说明原因'}")
+        payload, refs = _raw_rows(env, self.out_dir)
+        _assert_same_instrument(code, payload)
+        df, dropped = _frame_from_baostock(payload)
+
+        if not df.empty:
+            df = _to_ns_index(df).loc[str(start_date):str(end_date)]
+            if df.index.dtype != "datetime64[ns]":
+                raise LoaderError(f"索引分辨率没钉住：{df.index.dtype}（应为 datetime64[ns]）")
+
+        notes = ["停牌 / 无成交 %d 根已剔除" % dropped] if dropped else []
+        if self.limit_prices and not df.empty:
+            df, more_refs, limit_note = self._with_unadjusted(code, start_date, end_date, df)
+            refs = refs + more_refs
+            notes += [limit_note] if limit_note else []
+
+        return df, SymbolProvenance(
+            code=code, market="a_share", endpoint=endpoint, raw_refs=refs, rows=len(df),
+            first_bar=str(df.index[0].date()) if len(df) else None,
+            last_bar=str(df.index[-1].date()) if len(df) else None,
+            halted_bars=dropped,
+            note="；".join(notes),
+            price_basis=price_basis("a_share"),
+        )
+
+    def _a_share_tencent(self, code: str, start_date: str, end_date: str, why: str):
+        """A 股兜底：腾讯不复权日 K + 新浪复权因子等比换算成前复权。
+
+        只在 baostock 整条链取不到时才走到这里。换源会通过 ``self.notes`` 进
+        required_disclosures（见 ``_announce_source_switch``）。
+
+        🔴 取腾讯的**不复权**价再按因子换算，不用它自带的 qfq：后者是逐次减每股分红的
+           等差口径，高分红股早年价格会被减成负数（口径理由与 ``backtest/kline.py`` 同一份）。
+           顺带从同一份不复权序列取 raw_open / raw_pre_close，省掉主源那次额外的取数。
+        """
+        self._announce_source_switch(why)
+        # 往前多取一段：涨跌停判定要区间第一根的**前一交易日收盘价**，从区间起点开始取就拿不到。
+        # 10 个自然日足够跨过春节那种长休市。
+        lookback = (date.fromisoformat(start_date) - timedelta(days=10)).isoformat()
+        env = _run_fetch("tx_kline", code,
+                         {"period": "day", "adjust": "", "start": lookback, "end": end_date},
+                         self.out_dir, self.python, self.timeout)
+        if env.get("status") == "failed":
+            raise LoaderError(f"腾讯 K 线也没取到：{env.get('note') or '未说明原因'}")
+        refs = list((env.get("extra") or {}).get("raw_files") or [])
+        # 腾讯 K 线的 raw 是几页原始响应 + 一份抽取后的整段序列；读抽取那份，翻页已在端点里拼好。
+        picked = [r for r in refs if Path(r).name.startswith("extracted_")]
+        if not picked:
+            raise LoaderError("腾讯 K 线信封里没有抽取后的序列文件")
+        payload = _read_raw(self.out_dir, picked[-1])
+        rows = payload.get("rows") or []
+        six, ex = bare(code), code.split(".")[-1]
+        want = f"{ex.lower()}{six}"
+        got = {str(r.get("code") or "") for r in rows}
+        if got != {want}:
+            raise LoaderError(f"要的是 {want}，取回来的是 {sorted(got) or '空'} —— 不是同一只票，已中止")
+        # 参数没传过去的话拿回来的是它自带的前复权价，再按因子换算等于**复权两次**
+        if {str(r.get("adjust") or "") for r in rows} != {"none"}:
+            raise LoaderError("腾讯 K 线返回的不是不复权价，不能再按复权因子换算")
+
+        # 同一个 payload 解析两次：一次整段（只为拿区间前一根的前收），一次按区间
+        # （剔除数按区间算，不能把 lookback 那几根停牌算成用户区间的）。
+        raw_all, _ = _frame_from_tencent(payload)
+        if raw_all.empty:
+            raise LoaderError(f"腾讯 K 线在 {start_date}~{end_date} 没有数据")
+        raw_pre_all = _to_ns_index(raw_all).sort_index()["close"].shift(1)
+        raw, dropped = _frame_from_tencent(payload, window=(start_date, end_date))
+        if raw.empty:
+            raise LoaderError(f"腾讯 K 线在 {start_date}~{end_date} 没有数据")
+        raw = _to_ns_index(raw)
+        if raw.index.dtype != "datetime64[ns]":
+            raise LoaderError(f"索引分辨率没钉住：{raw.index.dtype}（应为 datetime64[ns]）")
+        raw_pre = raw_pre_all.reindex(raw.index)
+
+        apply_adjust, parse_adjust_factor_js = _sina_adjust_helpers()
+        fenv = _run_fetch("sina_adjust_factor", code, {"kind": "qfq"},
+                          self.out_dir, self.python, self.timeout)
+        if fenv.get("status") == "failed":
+            raise LoaderError(
+                f"复权因子取不到（{fenv.get('note') or '未说明原因'}）—— 不复权价不能直接拿来跑回测")
+        frefs = list((fenv.get("extra") or {}).get("raw_files") or [])
+        if not frefs:
+            raise LoaderError("复权因子信封里没有 raw_files")
+        try:
+            factors = parse_adjust_factor_js((self.out_dir / frefs[0]).read_text(encoding="utf-8"), code)
+        except (OSError, UnicodeDecodeError, ValueError, RuntimeError) as exc:
+            raise LoaderError(f"复权因子读不了：{exc}") from exc
+        try:
+            adj_rows = apply_adjust(raw.reset_index(), factors, kind="qfq")
+        except (ValueError, RuntimeError) as exc:
+            raise LoaderError(f"按复权因子换算失败：{exc}") from exc
+
+        df = pd.DataFrame(adj_rows)
+        df["date"] = pd.to_datetime(df["date"])
+        df = _to_ns_index(df.set_index("date").sort_index())[["open", "high", "low", "close"]]
+        # 涨跌停判定要的是不复权价：开盘价取当日，前收取**上一交易日收盘价** ——
+        # 不是交易所的除权后前收，除权日那天会偏一点，所以写进 note。
+        df = df.assign(raw_open=raw["open"].to_numpy(), raw_pre_close=raw_pre.to_numpy())
+
+        notes = ["涨跌停用腾讯不复权序列判定，前收按上一交易日收盘价，除权日与交易所口径有偏差"]
+        gaps = int((df["raw_open"].isna() | df["raw_pre_close"].isna()).sum())
+        if gaps:
+            notes.append(f"{gaps} 根没有不复权价，这几天的涨跌停按复权价近似判定")
+        if dropped:
+            notes.append("停牌 / 无成交 %d 根已剔除" % dropped)
+
+        return df, SymbolProvenance(
+            code=code, market="a_share", endpoint="tx_kline", raw_refs=refs + frefs, rows=len(df),
+            first_bar=str(df.index[0].date()) if len(df) else None,
+            last_bar=str(df.index[-1].date()) if len(df) else None,
+            halted_bars=dropped,
+            note="；".join(notes),
+            price_basis=price_basis("a_share"),
+        )
+
     def _fetch_one(self, code: str, start_date: str, end_date: str):
         mkt = market_of(code)
         if mkt not in SUPPORTED_MARKETS:
@@ -639,30 +829,25 @@ class VibeLoader:
             assert_a_share_stock(code)
             if code.endswith(".BJ") and date.fromisoformat(start_date) < date(2021, 11, 15):
                 raise LoaderError("北交所仅支持 2021-11-15 起的区间；此前精选层/新三板规则未建模")
-            endpoint = "bs_kline_qfq"
-            args = {"start_date": start_date, "end_date": end_date, "fields": _A_FIELDS}
-            # 🔴 传**带后缀**的写法。只传六位的话端点会用自己的规则重判，
-            #    而它的规则与我们的不一定一致 —— 实测 000001 被判成平安银行(sz)，
-            #    要上证综指(sh)的人会拿到一只银行股，**全程不报错**。
-            symbol = code
-            parse = _frame_from_baostock
-        else:
-            endpoint = "yahoo_kline"
-            args = {"interval": "1d", "range_": _yahoo_range(start_date, end_date)}
-            symbol = code if mkt == "hk_equity" else bare(code)
-            parse = _frame_from_yahoo
+            # 主源 baostock；它整条链取不到（网络不通、上游改协议…）时退到腾讯。
+            # 兜底必须出声：换源这件事由 _announce_source_switch 写进披露，不静默。
+            try:
+                return self._a_share_baostock(code, start_date, end_date)
+            except LoaderError as exc:
+                return self._a_share_tencent(code, start_date, end_date, why=str(exc))
+
+        endpoint = "yahoo_kline"
+        args = {"interval": "1d", "range_": _yahoo_range(start_date, end_date)}
+        symbol = code if mkt == "hk_equity" else bare(code)
 
         env = _run_fetch(endpoint, symbol, args, self.out_dir, self.python, self.timeout)
         if env.get("status") == "failed":
             raise LoaderError(f"{endpoint} 返回 failed：{env.get('note') or '未说明原因'}")
         payload, refs = _raw_rows(env, self.out_dir)
-        if mkt == "a_share":
-            _assert_same_instrument(code, payload)
-        else:
-            _assert_yahoo_daily(payload)
-        df, dropped = parse(payload)
+        _assert_yahoo_daily(payload)
+        df, dropped = _frame_from_yahoo(payload)
 
-        # Yahoo 拿的是整窗口，切到请求区间；baostock 已经按日期取过了，切一次也无害
+        # Yahoo 拿的是整窗口，切到请求区间
         if not df.empty:
             df = _to_ns_index(df).loc[str(start_date):str(end_date)]
             # 上面那个函数的存在理由就是这道检查 —— 分辨率一旦漂回去，
@@ -673,10 +858,6 @@ class VibeLoader:
                 raise LoaderError(f"索引分辨率没钉住：{df.index.dtype}（应为 datetime64[ns]）")
 
         notes = ["停牌 / 无成交 %d 根已剔除" % dropped] if dropped else []
-        if mkt == "a_share" and self.limit_prices and not df.empty:
-            df, more_refs, limit_note = self._with_unadjusted(code, start_date, end_date, df)
-            refs = refs + more_refs
-            notes += [limit_note] if limit_note else []
 
         prov = SymbolProvenance(
             code=code, market=mkt, endpoint=endpoint, raw_refs=refs, rows=len(df),
