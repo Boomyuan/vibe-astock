@@ -3,6 +3,22 @@
 格式遵循 Keep a Changelog，并采用语义化版本。v1.1.3 及更早的条目保留旧版原文。
 底座（Vibe Research）此前的变化见 [Vibe Research 的 CHANGELOG](https://github.com/simonlin1212/Vibe-Research/blob/main/CHANGELOG.md)。
 
+## [2.1.3] - 2026-10-24
+
+修 WorkBuddy 5.8 起「接入 AI」检测失败的问题（issue #23），移植自 Vibe Research v2.2.3 的同一修复；短线功能和页面用法都没有变化。
+
+### 修复
+
+- **精简运行包启动不了**：WorkBuddy 5.8 起内置的 CodeBuddy 程序（CLI 2.161.0）只带精简运行包，要环境变量 `CODEBUDDY_FORCE_LITE_WB_BUNDLE=1` 才能启动。我们起子进程时按白名单过滤环境，把它滤掉了，程序退出码 1，卡片显示「检测失败」。现在检测和实际调用时都固定带上它，其余环境仍按白名单过滤；旧版 WorkBuddy 和单独安装的 CodeBuddy CLI 由官方启动器自己回退到原运行包。安装位置没变，手动指定位置的功能不受影响。
+- **新版登录信息被判成未登录**：新版返回的登录信息可以是 `uid` / `type` / `userId`、不带 token，旧代码会把已登录判成未登录。现在两种结构都认，ID 为空、不一致、控制响应失败或探针异常退出仍不算登录；没有会话隔离参数的旧版 CLI 遇到新结构时提示升级。
+
+### 测试
+
+- 同步 Vibe Research 的 5 条回归，修复前全部失败、修复后通过。
+- 用 WorkBuddy 5.8.3 官方安装包里的程序实测：修复前检测失败（退出码 1），修复后能识别 2.161.0 并读到登录状态（测试时未登录）。
+- 独立审查（Codex 6.1 Sol）通过。
+- 没有 Windows 实机，也没有用登录了的 WorkBuddy 5.8.3 账号在本仓库复验；Vibe Research 在 macOS 真实登录下实测可用。
+
 ## [2.1.2] - 2026-10-18
 
 补 v2.1.1 在 Windows 上收紧私密文件时漏掉的两处：文件上单独挂的拒绝规则、文件的所有者。是把 v2.1.1 的修复搬回 Vibe Research 时，独立审计（Codex 6.1 Sol）在回补补丁里发现的，这里和 Vibe Research 用同一份修复。短线功能和页面用法都没有变化。
