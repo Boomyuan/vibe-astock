@@ -193,3 +193,15 @@ Python 用安装时建的虚拟环境；mypy 的安装与约定见 [`docs/develo
 - README 不放求职内容;A 股项目的公开材料不提知识星球等付费社群。
 - Star 数属于实时数据:写 README、封面或社交资料前必须重新查询 GitHub;可以展示稳定的整数档(如 `2,200+ Stars`),
   不得把旧快照写成当前精确值。
+
+### 6.7 本机下游依赖:judgment(勿破坏)
+
+- 本机另有独立运行中的生产程序 `D:\TRAN\judgment`(A 股判断层,Windows 计划任务
+  `judgment_daily` / `judgment_watch` 持续调度),它 vendored 了本仓库历史提交 `6d5812f`
+  的本地包 `duanxian/`(存放在 `D:\TRAN\judgment\vendor\duanxian\`,复用本仓库 `.venv`)。
+- 升级、重新镜像或"对齐上游"本仓库时,**不得以"上游没有该文件"为由删除
+  `judgment/vendor/duanxian/` 或其他 judgment 侧文件**。2026-10 的 v2.1.2 升级
+  曾因此把当时的本地包 `duanxian/` 删掉,导致 judgment 断粮 7 个交易日(10-15 ~ 10-23)。
+- 动本仓库前若涉及 judgment,先跑:
+  `D:\TRAN\vibe-astock\.venv\Scripts\python.exe -X utf8 -m pytest D:\TRAN\judgment\tests\test_duanxian_vendor.py -q`。
+- 协作红线详见 `D:\TRAN\judgment\AGENTS.md` 与 `D:\TRAN\judgment\vendor\duanxian\README.md`。
