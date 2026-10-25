@@ -4,7 +4,9 @@ import test from "node:test";
 import { backend } from "../src/verticals/finance/lib/backend.ts";
 import { announceUpdate, onUpdateChanged, updateStatusText, upgradeSteps, type UpdateInfo } from "../src/verticals/finance/lib/update.ts";
 
-const src = (rel: string) => fs.readFileSync(new URL(`../src/verticals/finance/${rel}`, import.meta.url), "utf8");
+// 读源码做结构断言：**统一换行**。Windows 检出（autocrlf）拿到的是 CRLF，
+// 而断言里的正则按 LF 写 —— 不归一化的话同一条断言在 Linux CI 通过、在 Windows 上永远红。
+const src = (rel: string) => fs.readFileSync(new URL(`../src/verticals/finance/${rel}`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 const info = (patch: Partial<UpdateInfo> = {}): UpdateInfo => ({
   current: "2.0.0", install: "source", enabled: true, env_disabled: false, skip_version: null, checked_at: "2026-10-09T08:00:00Z",
   latest: { version: "2.1.0", url: "https://github.com/simonlin1212/Vibe-Research/releases/tag/v2.1.0", published_at: null },

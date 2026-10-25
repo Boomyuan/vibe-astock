@@ -23,8 +23,9 @@ test("收件箱时间:当天只显示时分,跨天带日期,坏时间不显示",
   assert.equal(formatInboxTime("not-a-date", now), "");
 });
 
-test("三种群机器人都有接入说明,企业微信不出签名框", () => {
-  assert.deepEqual(WEBHOOK_KINDS.map((k) => k.kind), ["feishu", "wecom", "dingtalk"]);
+test("四种群机器人都有接入说明,企业微信不出签名框", () => {
+  // wxpusher 是本机加的第四个渠道（SPT 个人令牌，不走 webhook 签名）
+  assert.deepEqual(WEBHOOK_KINDS.map((k) => k.kind), ["feishu", "wecom", "dingtalk", "wxpusher"]);
   assert.equal(WEBHOOK_KINDS.find((k) => k.kind === "wecom")!.signLabel, null);
   for (const k of WEBHOOK_KINDS) assert.ok(k.hint.length > 20, k.kind);
 });
