@@ -7,7 +7,7 @@ import { test } from "node:test";
 import "../src/finance/register.ts";
 import "../src/finance/register_tasks.ts";
 import {
-  MAX_TRIES, captureSnapshot, cohortStats, dayDir, intradayBeat, loadDay, quotesOf, readStatus, shortlineIntraday, shortlineIntradayAct,
+  MAX_TRIES, captureSnapshot, cohortStats, dayDir, intradayBeat, loadDay, quotesOf, readStatus, resetIntradayCalendar, shortlineIntraday, shortlineIntradayAct,
   slotDue, timingProblem, validWindow, windowEnd, type LadderStock, type Snapshot,
 } from "../src/finance/shortline/intraday.ts";
 import { shortlineCloseFetch } from "../src/finance/shortline/close_fetch.ts";
@@ -237,13 +237,25 @@ test("读回时不认不是当场存的快照:原件保留、写进提示", asyn
 test("视图:周末 / 节假日各时点标「休市」,竞价说没有;日历没取到就照常说「没存到」,不猜", async () => {
   const ctx = tmpCtx();
   try {
-    // 周六:不用查日历
+    // 周六:日历的 period 对不上（取不到今天的事实）→ 不猜，仍按今天，各时点标休市
     const sat = fakeFetch();
     const w = await shortlineIntraday(ctx, {}, signal, sh("19:50", "2026-10-10"), sat.fetch);
+    assert.equal(w.date, "2026-10-10", "拿不到今天的日历就按今天，不瞎跳到别的日子");
     assert.equal(w.trading_day, false);
     assert.deepEqual(w.slots.map((s) => [s.state, s.reason]), Array(6).fill(["skipped", "周末休市"]));
     assert.equal(w.auction_reason, "周末休市,没有竞价");
-    assert.equal(sat.calls.length, 0, "周末不查日历,也不取任何数");
+    assert.equal(sat.calls.filter((c) => c.endpoint !== "fetch_trade_calendar").length, 0, "休市不取行情数");
+    // 周六但日历说清了（今天不开市、最近交易日是周五）→ **默认看周五**，不是看今天
+    resetIntradayCalendar();   // 上一步把「按今天」缓存住了，换个日历要清掉
+    const sat2 = fakeFetch({ fetch_trade_calendar: {
+      status: "ok",
+      evidence: Object.entries({ last_trading_day: PREV, previous_trading_day: "2026-10-08", is_today_trading_day: false, session_phase: "non_trading_day" })
+        .map(([field, value]) => ({ field, value, period: "2026-10-10" })),
+    } });
+    const w2 = await shortlineIntraday(ctx, {}, signal, sh("19:50", "2026-10-10"), sat2.fetch);
+    assert.equal(w2.date, PREV, "非交易日默认看最近一个交易日 —— 看今天只会是一页空白");
+    assert.equal(w2.today, false);
+    assert.equal(w2.trading_day, null, "过去的工作日不另查开不开市");
     // 工作日的节假日:日历说今天不开市
     const hol = fakeFetch({ fetch_trade_calendar: calEnv(false, "2026-10-01") });
     const h = await shortlineIntraday(ctx, {}, signal, sh("09:00", "2026-10-01"), hol.fetch);
@@ -254,7 +266,9 @@ test("视图:周末 / 节假日各时点标「休市」,竞价说没有;日历�
     try {
       await intradayBeat({ ctx: ctx2, signal, gate: async () => ({ status: "closed", reason: "今天不是交易日" }) }, { fetch: fakeFetch().fetch, clock: clockSeq("09:26") });
       await intradayBeat({ ctx: ctx2, signal, gate: async () => ({ status: "open" }) }, { fetch: fakeFetch({ cn_shortline_ladder: new Error("连不上") }).fetch, clock: clockSeq("09:36") });
-      const g = await shortlineIntraday(ctx2, {}, signal, sh("09:40"), fakeFetch({ fetch_trade_calendar: calEnv(false) }).fetch);
+      // 显式指定看哪一天：这一段验的是「当天存下的状态照原样显示」，
+      // 不指定日期时非交易日会默认跳到最近交易日（见下面那条断言），就不是这一天了。
+      const g = await shortlineIntraday(ctx2, { date: DAY }, signal, sh("09:40"), fakeFetch({ fetch_trade_calendar: calEnv(false) }).fetch);
       assert.deepEqual(g.slots.slice(0, 3).map((x) => x.state), ["skipped", "failed", "skipped"], "当时真试过、没存成的照实说");
       assert.equal(g.slots[0]!.reason, "今天不是交易日");
       assert.match(g.slots[1]!.reason!, /昨日梯队没取到/);

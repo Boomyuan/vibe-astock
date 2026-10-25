@@ -257,7 +257,8 @@ export function intradaySummary(r: IntradayResult): string {
   return out.join("\n");
 }
 
-export function IntradayTab({ date, refreshNonce, onBusy }: { date: string | null; refreshNonce: number; onBusy?: (b: boolean) => void }) {
+export function IntradayTab({ date, refreshNonce, onBusy, onDate }:
+  { date: string | null; refreshNonce: number; onBusy?: (b: boolean) => void; onDate?: (d: string) => void }) {
   const [st, setSt] = useState<{ state: "loading" } | { state: "done"; r: IntradayResult } | { state: "failed"; why: string }>({ state: "loading" });
   const [reloads, setReloads] = useState(0);
   const [capturing, setCapturing] = useState(false);
@@ -266,7 +267,9 @@ export function IntradayTab({ date, refreshNonce, onBusy }: { date: string | nul
     const ctl = new AbortController();
     onBusy?.(true);
     backend.shortlineIntraday<IntradayResult>(date, ctl.signal)
-      .then((r) => { if (!ctl.signal.aborted) setSt({ state: "done", r }); })
+      // 把后端解析出的「实际看的是哪一天」回报给父组件：不指定日期时后端会自己选
+      // （非交易日 → 最近交易日），页面上的日期框要跟着显示，不能空着让人以为没选。
+      .then((r) => { if (!ctl.signal.aborted) { setSt({ state: "done", r }); onDate?.(r.date); } })
       .catch((e: unknown) => { if (!ctl.signal.aborted) setSt({ state: "failed", why: cleanReason(e instanceof Error ? e.message : String(e)) }); })
       .finally(() => { if (!ctl.signal.aborted) onBusy?.(false); });
     return () => { ctl.abort(); onBusy?.(false); };

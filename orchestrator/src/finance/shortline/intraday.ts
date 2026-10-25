@@ -431,8 +431,38 @@ export function isWeekend(day: string): boolean {
   return d === 0 || d === 6;
 }
 
+/**
+ * 页面没指定日期时该看哪一天。
+ *
+ * 🔴 **只在「今天不是交易日」时改口径**：退回最近一个交易日。
+ *    非交易日拿"今天"只会得到一片空白（2026-10 现场：周日打开显示"这一天休市,没有盘中路径"），
+ *    而这一页是复盘用的，用户想看的就是最近那个真实交易日。
+ * 🔴 交易日**不动**：盘前/盘中的"今天"是活数据（09:25 自动存竞价快照），
+ *    改成上一个交易日反而把正在盯的盘藏起来。
+ * 🔴 拿不到日历就退回今天：这一页不该因为日历取不到而打不开，
+ *    对不对由 `trading_day` 字段和页面说明交代。
+ */
+async function defaultReviewDate(ctx: ServiceContext, today: string, nowMs: number, fetch: Fetch, signal: AbortSignal): Promise<string> {
+  // 缓存口径与 tradingDayOf 一致：取到了 30 分钟，没取到 1 分钟后再试
+  const c = reviewDateCache.get(ctx.dataRoot);
+  if (c && c.day === today && nowMs - c.at < (c.fetched ? 30 * 60_000 : 60_000)) return c.date;
+  const facts = await fetchTodayCalendar(ctx, today, fetch, signal);
+  let date = today;
+  if (facts && !facts.is_today_trading_day) {
+    const last = String(facts.last_trading_day ?? "");
+    // 日历给的日子比今天还晚 = 数据不可信（或跨年边界），不拿它去猜，按今天显示
+    if (validDate(last) && last <= today) date = last;
+  }
+  // 🔴 同一次取数顺手把「今天开不开市」告诉 tradingDayOf：
+  //    否则这一页每次打开都要为同一个事实查两遍日历（注册表里这份日历是 cache_max_age_sec: 0，不便宜）。
+  tradingCache.set(ctx.dataRoot, { day: today, at: nowMs, value: facts ? facts.is_today_trading_day : null });
+  reviewDateCache.set(ctx.dataRoot, { day: today, at: nowMs, date, fetched: Boolean(facts) });
+  return date;
+}
+
 const tradingCache = new Map<string, { day: string; at: number; value: boolean | null }>();
-export function resetIntradayCalendar(): void { tradingCache.clear(); }
+const reviewDateCache = new Map<string, { day: string; at: number; date: string; fetched: boolean }>();
+export function resetIntradayCalendar(): void { tradingCache.clear(); reviewDateCache.clear(); }
 
 /** 这一天开不开市:周末直接判;今天查日历(取到缓存 30 分钟,没取到 1 分钟后再查);过去的工作日不另查 → null(照「没存到」说) */
 async function tradingDayOf(ctx: ServiceContext, date: string, today: string, nowMs: number, fetch: Fetch, signal: AbortSignal): Promise<boolean | null> {
@@ -490,7 +520,11 @@ const MISSING_REASON = "这个时点没存到快照(当时程序没开着、不�
 
 export async function shortlineIntraday(ctx: ServiceContext, query: Record<string, string>, signal: AbortSignal, now = new Date(), fetch: Fetch = fetchEndpoint): Promise<IntradayView> {
   const { day: today, hm } = clockOf(now);
-  const date = query.date ?? today;
+  // 🔴 没指定日期时看**复盘页那一天**，不是「今天」。
+  //    这一页是复盘用的：非交易日 / 盘前拿"今天"只会得到一片空白
+  //    （2026-10 现场：周日打开显示"这一天休市,没有盘中路径"）。
+  //    日期口径与复盘页共用 resolveSession，避免两页各算一天。
+  const date = query.date ?? await defaultReviewDate(ctx, today, now.getTime(), fetch, signal);
   if (!validDate(date)) throw new ServiceError("bad_query", "date 要写成 YYYY-MM-DD");
   if (date > today) throw new ServiceError("bad_query", `${date} 还没到`);
   const { snapshots, warnings } = loadDay(ctx.dataRoot, date);

@@ -28,6 +28,8 @@ export function Watch() {
   const picked = params.get("date");
   const date = picked && ISO_DAY.test(picked) ? picked : null;
   const [refreshNonce, setRefreshNonce] = useState(0);
+  /** 没指定 ?date= 时后端自己挑的那一天（非交易日 → 最近交易日），只用来回填日期框，不写进 URL */
+  const [resolvedDate, setResolvedDate] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const setDate = (d: string | null) => setParams((prev) => {
@@ -49,7 +51,7 @@ export function Watch() {
             <label className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 px-2.5 py-1 text-xs text-muted-foreground">
               <CalendarDays className="h-3.5 w-3.5" />
               <span className="sr-only">看哪一天</span>
-              <input type="date" aria-label="看哪一天" value={date ?? ""} onChange={(ev) => setDate(ev.target.value || null)}
+              <input type="date" aria-label="看哪一天" value={date ?? resolvedDate ?? ""} onChange={(ev) => setDate(ev.target.value || null)}
                 className="bg-transparent text-foreground outline-none [color-scheme:dark]" />
             </label>
             {date && (
@@ -66,7 +68,7 @@ export function Watch() {
         ) : null}
       />
       <PageTabs label="盯盘的分页" value={tab} onChange={pickTab} options={TABS} />
-      {tab === "live" ? <LiveTab /> : <IntradayTab key={date ?? "today"} date={date} refreshNonce={refreshNonce} onBusy={setBusy} />}
+      {tab === "live" ? <LiveTab /> : <IntradayTab key={date ?? "today"} date={date} refreshNonce={refreshNonce} onBusy={setBusy} onDate={setResolvedDate} />}
       <Disclaimer />
     </div>
   );
