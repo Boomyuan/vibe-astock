@@ -2,10 +2,14 @@
 /**
  * 启动端口：页面 / 本机 API 默认用 brand.ts 里的 UI_PORT / API_PORT（和 Vibe Research 错开）。
  *
- * - 默认端口被别的程序占用，或被系统保留（Windows 常见：Hyper-V / WSL 会整段预留端口，绑定时报 EACCES），
- *   就按固定的顺序找一个空闲端口（先紧挨着的 20 个，再试几段远处的），启动器打开的也是实际用的那个地址。
- *   顺序固定是为了让同样的占用情况下每次换到同一个地址：模型 API 设置和对话记录存在浏览器里、按地址分开，
- *   地址每次都变的话，每次启动都要重新设置。都不行才让系统分配（那样每次可能不同，提示里会说）。
+ * 🔴 **页面端口默认钉死**：浏览器里的 AI 连接、对话记录按**源**（scheme+host+port）隔离，
+ *   换端口就等于换了个源 —— 配置会整份消失，而请求会退回后端默认来源照常可用，
+ *   表现为「侧栏说未接入、后端说已配置」。所以默认端口被占时**直接报错**，让人先把占用它的程序关掉，
+ *   而不是悄悄换到 5941 让用户第二天发现设置没了。
+ *   确实要换：`--port N` 显式指定，或设 `VRA_ALLOW_UI_PORT_FALLBACK=1` 放开自动挑
+ *   （按固定顺序挑，同样的占用情况每次落到同一个地址，提示里会说清后果）。
+ * - 系统保留（Windows 常见：Hyper-V / WSL 整段预留，绑定时报 EACCES）同属「不能用」，本机模式也报错；
+ *   API 端口不受这条约束（它不在浏览器里，换端口不影响任何本地存储）。
  * - 用户自己指定的端口（--port / --api-port，或环境变量 VRA_UI_PORT / VRA_API_PORT）不能用时直接报错，不擅自换。
  * - 远程访问模式的页面端口不自动换：云平台映射的是固定端口，换了外面就连不上。
  * - 默认页面端口（和紧挨着的那段）上已经开着一个本产品：提示直接打开它，不再起第二个。
@@ -45,6 +49,11 @@ export interface PortRequest {
   uiHost: string;
   /** 页面端口不许自动换（远程访问模式、换访问链接） */
   strictUi: boolean;
+  /**
+   * 页面端口被占时允许自动换到别的端口。**默认 false**（钉死）：
+   * 换端口 = 换浏览器源 = 本地存的 AI 连接与对话记录全部失效。
+   */
+  allowUiFallback?: boolean;
   /** API 端口不许自动换（换访问链接：旧服务的 API 还占着就说明它没停） */
   strictApi?: boolean;
 }
@@ -178,12 +187,17 @@ export async function chooseStartupPorts(
     // 只有换访问链接时才不许换(startup.ts 会接上「先停掉正在运行的服务」的说明)
     strict: request.strictApi === true, avoid: new Set(request.ui === null ? [] : [request.ui]), probe, assign,
   });
+  // 🔴 本机模式也按 strict 处理：除非显式放开，否则端口被占就报错，不悄悄换源
+  const pinned = request.strictUi || request.allowUiFallback !== true;
   const ui = await pickPort({
     label: "页面", otherLabel: "本机 API ", requested: request.ui, fallback: DEFAULT_UI_PORT, host: request.uiHost,
-    strict: request.strictUi, avoid: new Set([api.port]), probe, assign,
+    strict: pinned, avoid: new Set([api.port]), probe, assign,
     // 远程模式的页面要访问口令，这里探不到；本机 / 局域网模式才看是不是已经开着
     alreadyRunning: request.strictUi ? undefined : alreadyRunning,
-    strictHint: "远程访问模式不自动换端口（云平台映射的是固定端口）：先停掉占用它的程序，或用 --port 指定平台开放的另一个端口。",
+    strictHint: request.strictUi
+      ? "远程访问模式不自动换端口（云平台映射的是固定端口）：先停掉占用它的程序，或用 --port 指定平台开放的另一个端口。"
+      : `本机模式默认钉死页面端口：浏览器里存的 AI 连接和对话记录按地址分开，换端口就等于换了个源、设置会整份消失。`
+        + `先停掉占用它的程序；确实要换，用 --port 指定，或设 VRA_ALLOW_UI_PORT_FALLBACK=1 让它自己挑（会把后果说清楚）。`,
     switchHint: `注意：接入 AI 里的模型 API 设置和对话记录存在浏览器里、按地址分开，在新地址要重新设置；${DEFAULT_UI_PORT} 空出来后重启，就回到原来的地址和设置。`,
   });
   return { ui: ui.port, api: api.port, notes: [api.note, ui.note].filter((x): x is string => x !== null) };
@@ -220,6 +234,7 @@ export function portRequestFrom(
     uiHost: mode.remote || env.VRA_LAN === "1" ? "0.0.0.0" : "127.0.0.1",
     strictUi: mode.remote || mode.rotateAccess,
     strictApi: mode.rotateAccess,
+    allowUiFallback: env.VRA_ALLOW_UI_PORT_FALLBACK === "1",
   };
 }
 

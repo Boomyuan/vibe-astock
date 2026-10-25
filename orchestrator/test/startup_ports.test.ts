@@ -18,6 +18,8 @@ const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", ".
 const U = UI_PORT;
 const A = API_PORT;
 const local = { ui: null, api: null, uiHost: "127.0.0.1", strictUi: false };
+/** 显式放开自动换端口（VRA_ALLOW_UI_PORT_FALLBACK=1）；默认是钉死的，见下面那条用例 */
+const localFallback = { ...local, allowUiFallback: true };
 const SWITCH_HINT = `注意：接入 AI 里的模型 API 设置和对话记录存在浏览器里、按地址分开，在新地址要重新设置；${U} 空出来后重启，就回到原来的地址和设置。`;
 const states = (map: Record<number, PortState>) => async (port: number) => map[port] ?? "free";
 const notRunning = async () => null;
@@ -43,22 +45,37 @@ test("命令行 --port / --api-port 取出来当场校验,其它参数原样留�
   assert.deepEqual(takePortArgs(["--portable", "--api-portx"]), { ui: null, api: null, rest: ["--portable", "--api-portx"] }, "前缀相同的别的参数不算");
   assert.throws(() => takePortArgs(["--api-port"]), /--api-port 后面要跟端口号/);
   const req = portRequestFrom({ ui: null, api: 7001 }, { VRA_UI_PORT: "7000", VRA_API_PORT: "9999" }, { remote: false, rotateAccess: false });
-  assert.deepEqual(req, { ui: 7000, api: 7001, uiHost: "127.0.0.1", strictUi: false, strictApi: false });
+  assert.deepEqual(req, { ui: 7000, api: 7001, uiHost: "127.0.0.1", strictUi: false, strictApi: false, allowUiFallback: false });
   assert.throws(() => portRequestFrom({ ui: null, api: null }, { VRA_API_PORT: "x" }, { remote: false, rotateAccess: false }), /VRA_API_PORT/);
   assert.deepEqual(portRequestFrom({ ui: null, api: null }, { VRA_LAN: "1" }, { remote: false, rotateAccess: false }),
-    { ui: null, api: null, uiHost: "0.0.0.0", strictUi: false, strictApi: false }, "局域网模式页面听所有网卡,探测也要按它");
+    { ui: null, api: null, uiHost: "0.0.0.0", strictUi: false, strictApi: false, allowUiFallback: false }, "局域网模式页面听所有网卡,探测也要按它");
   assert.deepEqual(portRequestFrom({ ui: null, api: null }, {}, { remote: true, rotateAccess: false }),
-    { ui: null, api: null, uiHost: "0.0.0.0", strictUi: true, strictApi: false });
+    { ui: null, api: null, uiHost: "0.0.0.0", strictUi: true, strictApi: false, allowUiFallback: false });
   assert.deepEqual(portRequestFrom({ ui: null, api: null }, {}, { remote: true, rotateAccess: true }),
-    { ui: null, api: null, uiHost: "0.0.0.0", strictUi: true, strictApi: true }, "换访问链接时两个端口都不许换");
+    { ui: null, api: null, uiHost: "0.0.0.0", strictUi: true, strictApi: true, allowUiFallback: false }, "换访问链接时两个端口都不许换");
+  assert.equal(portRequestFrom({ ui: null, api: null }, { VRA_ALLOW_UI_PORT_FALLBACK: "1" }, { remote: false, rotateAccess: false }).allowUiFallback, true);
 });
 
 test("默认端口能用就用默认,不多说话", async () => {
   assert.deepEqual(await chooseStartupPorts(local, { probe: states({}), alreadyRunning: notRunning }), { ui: U, api: A, notes: [] });
 });
 
+test("本机模式默认钉死页面端口:被占用就报错,不悄悄换源", async () => {
+  // 换端口 = 换浏览器源 = localStorage 里的 AI 连接和对话记录整份失效，
+  // 而请求会退回后端默认来源照常可用 —— 表现为「侧栏说未接入、后端说已配置」。
+  await assert.rejects(
+    chooseStartupPorts(local, { probe: states({ [U]: "busy" }), alreadyRunning: notRunning }),
+    /本机模式默认钉死页面端口/,
+    "默认端口被别的程序占着时要明确报错，让人先关掉它",
+  );
+  // 显式放开才换（VRA_ALLOW_UI_PORT_FALLBACK=1），且必须说清后果
+  const r = await chooseStartupPorts(localFallback, { probe: states({ [U]: "busy" }), alreadyRunning: notRunning });
+  assert.equal(r.ui, U + 1);
+  assert.match(r.notes.join(""), /按地址分开/);
+});
+
 test("默认端口被占用或被系统保留(Windows 常见):往后找空闲的,并说清楚换成了哪个", async () => {
-  const r = await chooseStartupPorts(local, {
+  const r = await chooseStartupPorts(localFallback, {
     probe: states({ [U]: "reserved", [U + 1]: "busy", [A]: "busy" }), alreadyRunning: notRunning,
   });
   assert.equal(r.ui, U + 2);
@@ -83,8 +100,8 @@ test("紧挨着的 20 个都不能用(Hyper-V 整段保留):换到远处固定�
   for (let p = U; p <= U + 20; p++) blocked[p] = "reserved";
   let assigned = 0;
   const assign = async () => { assigned += 1; return 41000; };
-  const first = await chooseStartupPorts(local, { probe: states(blocked), assign, alreadyRunning: notRunning });
-  const second = await chooseStartupPorts(local, { probe: states(blocked), assign, alreadyRunning: notRunning });
+  const first = await chooseStartupPorts(localFallback, { probe: states(blocked), assign, alreadyRunning: notRunning });
+  const second = await chooseStartupPorts(localFallback, { probe: states(blocked), assign, alreadyRunning: notRunning });
   assert.deepEqual([first.ui, second.ui], [U + 10000, U + 10000]);
   assert.equal(assigned, 0, "固定的备选端口能用就不让系统随机分配");
   assert.equal(first.notes.at(-1), `页面默认端口 ${U} 被系统保留、不能使用，这次改用 ${U + 10000}。${SWITCH_HINT}`);
@@ -94,7 +111,7 @@ test("固定的备选端口全不行才让系统分配;分到的和另一个端�
   const busy: Record<number, PortState> = { [U]: "reserved" };
   for (const p of fallbackPorts(U)) busy[p] = "reserved";
   const assigned = [A, 41000];
-  const r = await chooseStartupPorts(local, { probe: states(busy), assign: async () => assigned.shift()!, alreadyRunning: notRunning });
+  const r = await chooseStartupPorts(localFallback, { probe: states(busy), assign: async () => assigned.shift()!, alreadyRunning: notRunning });
   assert.equal(r.ui, 41000, `${A} 已经给了 API,不能再给页面`);
   assert.match(r.notes.join(""), /常用的备选端口也都不能用，这次改用 41000（每次启动可能不同）/);
 });
@@ -105,7 +122,7 @@ test("页面听所有网卡(局域网模式)时回环地址也要空着:别的�
     seen.push(`${host}:${port}`);
     return port === U && host === "127.0.0.1" ? "busy" : "free";
   };
-  const r = await chooseStartupPorts({ ...local, uiHost: "0.0.0.0" }, { probe, alreadyRunning: notRunning });
+  const r = await chooseStartupPorts({ ...localFallback, uiHost: "0.0.0.0" }, { probe, alreadyRunning: notRunning });
   assert.equal(r.ui, U + 1);
   assert.deepEqual(seen.filter((x) => x.endsWith(`:${U}`)), [`0.0.0.0:${U}`, `127.0.0.1:${U}`]);
   assert.ok(seen.includes(`127.0.0.1:${U + 1}`), "换到的端口回环也要查");
@@ -142,9 +159,10 @@ test("默认页面端口上已经开着一个本产品:提示直接打开它,不
   await assert.rejects(chooseStartupPorts(local, { probe: states({ [U]: "busy", [A]: "busy" }), alreadyRunning: running }),
     new RegExp(`${U} 上已经有一个 ${PRODUCT_NAME} 在运行`));
   assert.equal(asked, 1);
-  // 被系统保留不可能是本产品,不用探
-  await chooseStartupPorts(local, { probe: states({ [U]: "reserved" }), alreadyRunning: running });
-  assert.equal(asked, 1);
+  // 被系统保留不可能是本产品,不用探;钉死模式下直接报错(不再悄悄换端口)
+  await assert.rejects(chooseStartupPorts(local, { probe: states({ [U]: "reserved" }), alreadyRunning: running }),
+    /本机模式默认钉死页面端口/);
+  assert.equal(asked, 1, "保留端口不可能是本产品,不该去探它");
   await assert.rejects(chooseStartupPorts({ ...local, strictUi: true, uiHost: "0.0.0.0" }, { probe: states({ [U]: "busy" }), alreadyRunning: running }),
     /远程访问模式不自动换端口/);
   assert.equal(asked, 1);
@@ -153,14 +171,14 @@ test("默认页面端口上已经开着一个本产品:提示直接打开它,不
 test("上次换过端口的本产品还开着(在紧挨着的那段上):同样认出来,不起第二个;远处的段不探", async () => {
   const asked: number[] = [];
   const atThird = async (port: number) => { asked.push(port); return port === U + 2 ? `http://127.0.0.1:${port} 上已经有一个 ${PRODUCT_NAME} 在运行` : null; };
-  await assert.rejects(chooseStartupPorts(local, { probe: states({ [U]: "busy", [U + 1]: "busy", [U + 2]: "busy" }), alreadyRunning: atThird }),
+  await assert.rejects(chooseStartupPorts(localFallback, { probe: states({ [U]: "busy", [U + 1]: "busy", [U + 2]: "busy" }), alreadyRunning: atThird }),
     new RegExp(`${U + 2} 上已经有一个 ${PRODUCT_NAME} 在运行`));
   assert.deepEqual(asked, [U, U + 1, U + 2]);
   // 远处那段被占的端口不当成本产品去探(太多、也不会是上次换到的近处端口)
   asked.length = 0;
   const blocked: Record<number, PortState> = { [U + 10000]: "busy" };
   for (let p = U; p <= U + 20; p++) blocked[p] = "reserved";
-  const r = await chooseStartupPorts(local, { probe: states(blocked), alreadyRunning: atThird });
+  const r = await chooseStartupPorts(localFallback, { probe: states(blocked), alreadyRunning: atThird });
   assert.equal(r.ui, U + 10001);
   assert.deepEqual(asked, []);
 });
@@ -179,7 +197,7 @@ test("真实场景:默认端口被别的程序占着,换一个;是本产品在�
   const other = net.createServer();
   const port = await listen(other);
   try {
-    const r = await chooseStartupPorts(local, {
+    const r = await chooseStartupPorts(localFallback, {
       probe: async (p, host) => p === U ? await probePort(port, host) : "free", alreadyRunning: notRunning,
     });
     assert.equal(r.ui, U + 1, "端口被不认识的程序占着就换");
