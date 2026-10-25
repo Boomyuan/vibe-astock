@@ -134,6 +134,9 @@ export class LocalAgentStageAgent implements AgentRunner {
           env: this.#options.env,
           timeoutMs: Math.max(1, deadline - Date.now()),
           signal,
+          // 一次性工作区没清掉：只记事件，不判本轮失败（否则整轮研究会白跑并进入重试）
+          onWorkspaceCleanupFailed: (dir, error) =>
+            this.log(stage, "local_agent.workspace_cleanup_failed", { attempt, session: sessions, dir, error: error.slice(0, 200) }),
           controlledMcp: {
             serverName: SERVER_NAME,
             command: process.execPath,

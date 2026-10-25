@@ -23,6 +23,22 @@ type ParentSignal = "SIGINT" | "SIGTERM" | "SIGHUP";
 const parentSignalHandlers = new Map<ParentSignal, () => void>();
 let parentExitHookInstalled = false;
 
+/**
+ * 没清掉的一次性工作区：延迟重试，不在请求路径上同步等待。
+ * 同步 rmSync 的重试会阻塞整个服务（第 n 次多等 n×retryDelay），所以失败后只排一个定时器。
+ * 每次退避 5s/10s/15s，最多 3 次；仍失败就留着 —— 一个临时目录比一次白跑的研究便宜。
+ */
+function scheduleWorkspaceSweep(dir: string, attempt = 1): void {
+  const timer = setTimeout(() => {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 });
+    } catch {
+      if (attempt < 3) scheduleWorkspaceSweep(dir, attempt + 1);
+    }
+  }, 5_000 * attempt);
+  timer.unref?.();
+}
+
 export type LocalAgentId = "claude" | "codebuddy" | "codex";
 
 export interface LocalAgentStatus {
@@ -1217,6 +1233,12 @@ export interface RunLocalAgentOptions {
     allowedTools: string[];
     maxTurns?: number;
   };
+  /**
+   * 一次性工作区没清掉时的通知（目录、原因）。
+   * 🔴 这不是失败回调：本轮的返回值照常给出，只是把「留了一个目录」如实记一笔。
+   *    调用方应该写进事件日志，让它在运行记录里可见，而不是静默。
+   */
+  onWorkspaceCleanupFailed?: (dir: string, error: string) => void;
 }
 
 export function localAgentInput(agent: LocalAgentId, prompt: string, images?: RunLocalAgentOptions["userImages"]): string {
@@ -1482,7 +1504,9 @@ export async function runLocalAgent(agent: LocalAgentId, opts: RunLocalAgentOpti
       }
     } catch (error) {
       activeLocalAgents = Math.max(0, activeLocalAgents - 1);
-      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      // 清理失败不许盖掉真正的原因（原来 rmSync 抛错会把 error 换成 EBUSY，报错就成了「文件占用」）
+      try { fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+      catch { scheduleWorkspaceSweep(tmpDir); }
       throw error;
     }
   }
@@ -1538,14 +1562,27 @@ export async function runLocalAgent(agent: LocalAgentId, opts: RunLocalAgentOpti
     let hardKillTimer: NodeJS.Timeout | null = null;
     let killFallbackTimer: NodeJS.Timeout | null = null;
 
-    const cleanup = () => {
+    const cleanup = (): string | null => {
       opts.signal?.removeEventListener("abort", onAbort);
       // Windows may briefly retain a handle after process close. Retry within a
       // fixed bound; a persistent cleanup failure must never become success.
       // 实测 CLI 退出后 descendants 偶发还握着 tmpDir 句柄几百毫秒（杀毒扫描更久）。
       // rmSync 的重试是同步等待、每次多等 retryDelay（第 n 次等 n×retryDelay），期间整个服务停住：
       // 7×100ms 累计最多 2.8 秒（原来 5×100ms 是 1.5 秒），别再往上加。
-      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 7, retryDelay: 100 });
+      //
+      // 🔴 但清理失败**不再判本轮失败**（2026-10 修正）：CLI 已经退出、产物已经收下，
+      //    因为一个文件句柄没放开就把整轮深度研究判成失败，代价远大于留一个临时目录。
+      //    原来的做法还会让 agent_cleanup_failed 落进「非致命」分支 → 整轮重试 → 每轮都清不掉 →
+      //    运行看起来「还在进行中」，取消又要等宽限窗口。现在：结果照常落定，失败如实上报 + 延迟重试。
+      try {
+        fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 7, retryDelay: 100 });
+        return null;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        scheduleWorkspaceSweep(tmpDir);
+        try { opts.onWorkspaceCleanupFailed?.(tmpDir, msg); } catch { /* 回调本身不许影响结果 */ }
+        return msg;
+      }
     };
     const finish = (fn: () => void) => {
       if (settled) return;
@@ -1555,11 +1592,7 @@ export async function runLocalAgent(agent: LocalAgentId, opts: RunLocalAgentOpti
       if (killFallbackTimer) clearTimeout(killFallbackTimer);
       activeLocalAgents = Math.max(0, activeLocalAgents - 1);
       untrackLocalAgentProcess(child);
-      try { cleanup(); }
-      catch {
-        reject(new LocalAgentError("agent_cleanup_failed", `${label} 临时工作区清理失败，请检查本机文件权限`));
-        return;
-      }
+      cleanup();
       fn();
     };
     let closed = false;

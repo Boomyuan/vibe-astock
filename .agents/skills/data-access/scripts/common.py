@@ -184,13 +184,20 @@ def _em_serial(fn):
 
 def em_get(url: str, params: Optional[dict] = None, headers: Optional[dict] = None, timeout: int = 15):
     """东财统一入口:跨进程串行(锁覆盖整个请求)+ 会话复用 + UA/Referer;403 不重试。
-    先按系统代理设置请求,遇连接类错误再直连重试一次(东财单域经代理常断连);每次重试同样排队。"""
+
+    🔴 **直连优先**(2026-10 改):东财是国内源,走代理只会被弄断。
+       原来「先代理、遇连接错误再直连」有两个问题:
+         1. 用户开着系统代理时,每次请求都要先白等一个代理往返;
+         2. 代理回一段 HTML 错误页时**不抛 ProxyError**,被当成取到了数据往下走,
+            比报错更难查(现场表现就是"国内数据源莫名其妙断了")。
+       现在只有直连失败(纯代理才能上网的环境,如公司网)才退到代理会话。
+    """
     import requests
 
     try:
-        return _em_serial(lambda: _em_session(True).get(url, params=params, headers=headers, timeout=timeout))
-    except (requests.exceptions.ProxyError, requests.exceptions.ConnectionError):
         return _em_serial(lambda: _em_session(False).get(url, params=params, headers=headers, timeout=timeout))
+    except (requests.exceptions.ProxyError, requests.exceptions.ConnectionError):
+        return _em_serial(lambda: _em_session(True).get(url, params=params, headers=headers, timeout=timeout))
 
 
 def em_multi_host(hosts: tuple, path: str, params: Optional[dict] = None, timeout: int = 15):

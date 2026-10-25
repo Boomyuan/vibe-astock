@@ -1121,7 +1121,10 @@ setInterval(()=>{},1000);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("临时目录清理失败应拒绝请求，不抛出未捕获异常或把任务悬空", async () => {
+test("临时工作区清理失败不判本轮失败，但要如实上报（不静默、不悬空）", async () => {
+  // 2026-10 现场：CodeBuddy 退出后 descendants 仍握着 tmpDir，rmSync 抛 EPERM/EBUSY。
+  // 原来的做法是把已经跑完的一轮判成 agent_cleanup_failed —— 而它不在致命集合里，
+  // 于是整轮重试、每轮都清不掉，运行看起来「还在进行中」。现在：结果照常返回，失败上报一次。
   const f = fakeClaude();
   const original = fs.rmSync;
   let retained: fs.PathLike | undefined;
@@ -1132,10 +1135,15 @@ test("临时目录清理失败应拒绝请求，不抛出未捕获异常或把�
     }
     return original(target, options);
   }) as typeof fs.rmSync;
+  const seen: Array<[string, string]> = [];
   try {
-    await assert.rejects(runLocalAgent("claude", {
+    const answer = await runLocalAgent("claude", {
       systemPrompt: "规则", userPrompt: "测试", env: { ...process.env, CLAUDE_BIN: f.bin },
-    }), (e: unknown) => e instanceof LocalAgentError && e.code === "agent_cleanup_failed");
+      onWorkspaceCleanupFailed: (dir, error) => seen.push([dir, error]),
+    });
+    assert.ok(answer.includes("|keys="), "CLI 的产出要照常返回，不能被清理失败吞掉");
+    assert.equal(seen.length, 1, "清理失败必须上报一次，不能静默");
+    assert.match(seen[0]![1], /synthetic permission failure/);
   } finally {
     fs.rmSync = original;
     if (retained) original(retained, { recursive: true, force: true, maxRetries: 5 });
