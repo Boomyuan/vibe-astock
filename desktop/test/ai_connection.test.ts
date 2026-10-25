@@ -61,3 +61,45 @@ test("订阅档用的是用户自己登录好的 CLI：不再出现 v1 的「产
   assert.deepEqual(SUBSCRIPTION_MODELS.map((m) => m.provider), ["cli-codex", "cli-claude", "cli-codebuddy"]);
   for (const m of SUBSCRIPTION_MODELS) assert.doesNotMatch(m.description, /产品自带|产品专用|推荐/, m.name);
 });
+
+// ---------------- 三处状态必须同一句话（2026-10 现场：侧栏「未接入」/ 设置页「等待连接」/ 后端「已配置」） ----------------
+import { aiConnectionText, resolveAiConnection } from "../src/verticals/finance/lib/aiConnection.ts";
+
+test("本页有配置：以本页为准", () => {
+  const c = resolveAiConnection(
+    { status: "ok", config: { schemaVersion: 2, source: { provider: "cli-codebuddy", apiKey: "", baseURL: "", model: "x" } } },
+    { profile: "deepseek", label: "DeepSeek API" },
+  );
+  assert.equal(c.status, "ok");
+  assert.equal(c.status === "ok" && c.provider, "cli-codebuddy", "本页存的优先于后端默认");
+  assert.equal(aiConnectionText(c), "已接入AI：WorkBuddy CLI");
+});
+
+test("本页没配置但后端有默认：既不能说「未接入」，也不能说「已接入」", () => {
+  for (const status of ["none", "broken", "unavailable"] as const) {
+    const c = resolveAiConnection({ status, config: null }, { profile: "cli-codebuddy", label: "WorkBuddy / CodeBuddy" });
+    assert.equal(c.status, "backend_only");
+    const text = aiConnectionText(c);
+    assert.match(text, /后台默认：WorkBuddy \/ CodeBuddy/, "要说清后台用的是什么");
+    assert.match(text, /测试并保存/, "要给出恢复办法");
+    assert.doesNotMatch(text, /^未接入AI/, "后端明明配着，不能说未接入");
+    assert.doesNotMatch(text, /^已接入AI/, "本页没有配置，页面发出的 AI 请求会被拒，不能说已接入");
+  }
+});
+
+test("两边都没有才算未接入", () => {
+  assert.equal(resolveAiConnection({ status: "none", config: null }, { profile: null }).status, "none");
+  assert.equal(aiConnectionText(resolveAiConnection({ status: "none", config: null }, null)), "未接入AI，请设置");
+});
+
+test("后端没起来（还没读到）时不编造，仍按本页状态", () => {
+  const c = resolveAiConnection({ status: "none", config: null }, null);
+  assert.equal(c.status, "none");
+  assert.equal(aiConnectionText(c), "未接入AI，请设置");
+});
+
+test("读不到本机存储时，后端也没配置要说「读不到」而不是「未接入」", () => {
+  const c = resolveAiConnection({ status: "unavailable", config: null }, { profile: null });
+  assert.equal(c.status, "unavailable");
+  assert.match(aiConnectionText(c), /隐私/);
+});

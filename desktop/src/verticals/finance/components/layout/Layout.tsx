@@ -13,8 +13,8 @@ import { UpdateBanner } from "./UpdateBanner";
 import { useDarkMode } from "@/hooks/useDarkMode";
 import { usePrivacyMode } from "@/hooks/usePrivacyMode";
 import { storageGet, storageSet } from "@/lib/storage";
-import { useAiRuntime } from "@/hooks/useAiRuntime";
-import { aiConnectionLabel } from "@/lib/aiConnection";
+import { useAiConnection } from "@/hooks/useAiRuntime";
+import { aiConnectionText } from "@/lib/aiConnection";
 import { useNotifyUnread } from "@/hooks/useNotifyUnread";
 import { NAV_SECTIONS, isGroup, navPageOf, navTitle, sectionHome, withSectors, type NavIcon, type NavSection } from "@/lib/nav";
 import sectorsData from "@/data/sectors.json";
@@ -49,7 +49,7 @@ const PINNED_SECTIONS = SECTIONS.filter((s) => s.pinned);
 export function Layout() {
   const { pathname } = useLocation();
   const navigation = useNavigation();
-  const aiRuntime = useAiRuntime();
+  const aiConnection = useAiConnection();
   const { dark, toggle } = useDarkMode();
   const privacy = usePrivacyMode();
   const navRef = useRef<HTMLElement | null>(null);
@@ -248,7 +248,7 @@ export function Layout() {
             {!compact && <div data-ai-identity className="mt-1.5 space-y-0.5">
               <p className="text-[10px] leading-4 text-muted-foreground">{PRODUCT_TAGLINE}</p>
               <Link to="/settings" data-testid="ai-runtime-badge" title="查看或更改已保存的 AI 接入" className="flex min-w-0 items-start gap-1 text-[10px] leading-5 text-muted-foreground hover:text-primary">
-                <span className="mt-2 h-1 w-1 shrink-0 rounded-full bg-primary" /><span>{aiConnectionLabel(aiRuntime)}</span>
+                <span className="mt-2 h-1 w-1 shrink-0 rounded-full bg-primary" /><span>{aiConnectionText(aiConnection)}</span>
               </Link>
             </div>}
           </div>

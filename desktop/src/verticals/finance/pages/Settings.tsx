@@ -8,7 +8,7 @@ import { backend, friendlyAgentError, type LocalAgentStatus, type ProductInfo } 
 import { API_MODELS, PROVIDER_BASE, SUBSCRIPTION_MODELS, apiPresetForSaved, isCliProvider, modelNameForPreset, providerOfModel, type ProviderId } from "@/lib/ai-models";
 import { clearLlm, loadUserLlm, saveLlm } from "@/lib/llm";
 import { LLM_KEY } from "@/lib/llmStore";
-import { testAndSaveAi } from "@/lib/aiConnection";
+import { aiConnectionText, resolveAiConnection, testAndSaveAi } from "@/lib/aiConnection";
 import { useAiRuntime } from "@/hooks/useAiRuntime";
 import { UpdateSettingsCard } from "@/components/UpdateSettingsCard";
 import { SecContactCard } from "@/components/SecContactCard";
@@ -283,10 +283,13 @@ export function Settings() {
     : err
       ? { label: "本地 API 未连接", cls: "border-destructive/25 bg-destructive/[0.08] text-destructive" }
       : { label: "正在检测", cls: "border-border bg-muted/40 text-muted-foreground" };
-  const selectedRuntime = !configured
-    ? "等待连接 AI"
-    : runtimeLabel(runtime.config?.source.provider);
-  const selectedProvider = runtime.config?.source.provider ?? "";
+  // 三处状态**同一个判定**：本页配置 + 后端默认。原来这页自己判 configured、侧栏只看 localStorage、
+  // 后端又只报自己的 config.json —— 于是同一时刻能说出三句不同的话。
+  const connection = resolveAiConnection(runtime, info?.provider ?? null);
+  const selectedRuntime = connection.status === "ok"
+    ? runtimeLabel(connection.provider)
+    : aiConnectionText(connection);
+  const selectedProvider = connection.status === "ok" ? connection.provider : "";
   const localSubscriptionRuntime = configured && ["cli-codex", "cli-claude", "cli-codebuddy"].includes(selectedProvider);
   const localRuntimeName = selectedProvider === "cli-codebuddy" ? "WorkBuddy / CodeBuddy" : selectedProvider === "cli-codex" ? "Codex" : "Claude Code";
   const runtimeFeatures = localSubscriptionRuntime
@@ -526,8 +529,8 @@ export function Settings() {
             </div>
           </div>
           <div className="mt-4 rounded-xl border border-border/60 bg-background/30 p-3 text-xs leading-5 text-muted-foreground">
-            {!configured ? (
-              <><b className="text-foreground">等待连接 AI。</b> 连接成功后，对话、研究、辩论和回测都用这一个来源。</>
+            {connection.status !== "ok" ? (
+              <><b className="text-foreground">{aiConnectionText(connection)}</b> 连接成功后，对话、研究、辩论和回测都用这一个来源。</>
             ) : localSubscriptionRuntime ? (
               <><b className="text-foreground">当前：{localRuntimeName}。</b> 对话、材料任务、六阶段研究、多空辩论和回测都用它；不会暗中换成别家。</>
             ) : (

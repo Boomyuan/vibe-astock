@@ -37,7 +37,9 @@ test("所有对话入口共用主题适配表面，普通数据卡不染色", ()
 test("侧栏只显示已接入的 AI，不再有 Agent 开关", () => {
   const layout = read("verticals/finance/components/layout/Layout.tsx");
   assert.match(layout, /data-ai-identity className="mt-1\.5 space-y-0\.5"/);
-  assert.match(layout, /aiConnectionLabel\(aiRuntime\)/);
+  // 侧栏与设置页共用同一个连接判定（本页配置 + 后端默认），不再各自读 localStorage 各说一句
+  assert.match(layout, /useAiConnection\(\)/);
+  assert.match(layout, /aiConnectionText\(aiConnection\)/);
   assert.doesNotMatch(layout, /AgentToggle/);
   assert.equal(fs.existsSync(new URL("../src/verticals/finance/components/ui/AgentToggle.tsx", import.meta.url)), false);
 });

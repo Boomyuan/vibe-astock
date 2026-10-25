@@ -143,7 +143,9 @@ test("根路径是极简功能首页,首屏可直接与 Agent 交流", () => {
   // M23 首屏改为聊天与快捷接入，状态在侧栏显示；不强制跳离首页。
   const featuresSrc = fs.readFileSync(path.join(FINANCE, "lib", "homeFeatures.ts"), "utf8");
   assert.match(homeSrc, /<h1\b[^>]*>\{PRODUCT_NAME\} 研究工作台<\/h1>/);
-  assert.match(layoutSrc, /aiConnectionLabel\(aiRuntime\)/);
+  // 侧栏与设置页共用同一个连接判定（本页配置 + 后端默认），不再各自读 localStorage
+  assert.match(layoutSrc, /useAiConnection\(\)/);
+  assert.match(layoutSrc, /aiConnectionText\(aiConnection\)/);
   assert.doesNotMatch(layoutSrc, /<Navigate/);
   assert.ok(!/Codex Harness 研究流程|全部功能，一页直达|先看清今天发生了什么/.test(homeSrc),
     "首页仍保留上一版的大段说明");
@@ -234,7 +236,9 @@ test("全局 AI 来源在品牌区、对话面板与模型页三处口径一致�
   // 侧栏小字从 brand.ts 取(VA 与上游 VR 只在 brand.ts 不同)
   assert.match(layoutSrc, /\{PRODUCT_TAGLINE\}/);
   assert.match(fs.readFileSync(path.join(FINANCE, "lib", "brand.ts"), "utf8"), /PRODUCT_TAGLINE = "A 股短线复盘与跟踪工作台"/);
-  assert.match(layoutSrc, /aiConnectionLabel\(aiRuntime\)/);
+  // 侧栏与设置页共用同一个连接判定（本页配置 + 后端默认），不再各自读 localStorage
+  assert.match(layoutSrc, /useAiConnection\(\)/);
+  assert.match(layoutSrc, /aiConnectionText\(aiConnection\)/);
   const connectionSrc = fs.readFileSync(path.join(FINANCE, "lib", "aiConnection.ts"), "utf8");
   assert.match(connectionSrc, /Claude订阅/);
   assert.match(connectionSrc, /WorkBuddy CLI/);
@@ -247,7 +251,8 @@ test("全局 AI 来源在品牌区、对话面板与模型页三处口径一致�
   assert.match(dockSrc, /trigger: "问 Agent"/);
   assert.match(settingsSrc, /一、连接 AI/);
   assert.match(settingsSrc, /二、接入后能做什么/);
-  assert.match(settingsSrc, /等待连接 AI/, "未配置时不能冒充已经选中了某个运行时");
+  assert.match(settingsSrc, /resolveAiConnection\(runtime, info\?\.provider/, "设置页要用同一个判定，不能自己另算一套");
+  assert.match(settingsSrc, /aiConnectionText\(connection\)/, "未配置时不能冒充已经选中了某个运行时");
   assert.match(settingsSrc, /本地 API 已连接/);
   assert.match(settingsSrc, /WorkBuddy \/ CodeBuddy/);
   assert.match(settingsSrc, /@tencent-ai\/codebuddy-code/);
