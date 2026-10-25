@@ -672,9 +672,28 @@ _MKT_SUFFIX = {105: "O", 106: "N", 107: "A"}
 
 def suggest_rows(keyword: str, count: int = 10) -> list[dict]:
     """东财搜索框同款联想接口(支持代码 / 中文名 / 拼音首字母),原样返回各行:
-    Code / Name / MktNum / SecurityTypeName / Classify / PinYin。不做市场过滤,由调用方按需筛。"""
-    d = em_json("https://searchapi.eastmoney.com/api/suggest/get", params={"input": keyword, "type": 14, "token": "D43BF722C8E33BDC906FB84D85E326E8", "count": count}, timeout=10)
-    return [it for it in (d.get("QuotationCodeTable") or {}).get("Data") or [] if isinstance(it, dict)]
+    Code / Name / MktNum / SecurityTypeName / Classify / PinYin。不做市场过滤,由调用方按需筛。
+
+    🔴 这个接口有两处坑(2026-10 实测):
+      1. 按客户端指纹返回 **JSONP**(`cb({...});`),标准 JSON 解析会抛 JSONDecodeError
+         —— 由 ``em_json`` 的容错解析兜住,这里不重复处理。
+      2. 同一客户端短时间内换关键词,会拿到**上一次查询的缓存响应**(粘滞):
+         「600519」查完再查「茅台」,返回的还是茅台那一份甚至干脆是错的。
+         带一个毫秒级 `_` 参数把 URL 变掉,绕过缓存键;服务端不认这个参数,只会忽略。
+    """
+    import time as _time
+    d = em_json("https://searchapi.eastmoney.com/api/suggest/get", params={
+        "input": keyword, "type": 14, "token": "D43BF722C8E33BDC906FB84D85E326E8", "count": count,
+        "_": str(int(_time.time() * 1000)),
+    }, timeout=10)
+    table = d.get("QuotationCodeTable") if isinstance(d, dict) else None
+    if not isinstance(table, dict):
+        # 🔴 这里必须抛，不能静默返回 []：这个接口会按客户端指纹把请求路由到**别的接口**
+        #    （实测拿到的是 `{code, extra, result:{passportWeb:[...]}}`，而且不同关键词返回同一份缓存毒药）。
+        #    静默返回空数组会让调用方以为「用户搜的词没有结果」，于是不给备用源、也不报错。
+        #    抛出去，调用方才知道「这个源当前不可用」，才谈得上降级。
+        raise RuntimeError(f"东财搜索返回的不是候选表（顶层字段：{sorted(d)[:6] if isinstance(d, dict) else type(d).__name__}）")
+    return [it for it in table.get("Data") or [] if isinstance(it, dict)]
 
 
 def stock_search(keyword: str, count: int = 10) -> list[dict]:

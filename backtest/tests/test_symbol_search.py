@@ -15,6 +15,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 sys.path.insert(0, ROOT)
 from backtest import symbol_search as S  # noqa: E402
 import sources.eastmoney as em  # noqa: E402  (symbol_search 导入时已把取数层脚本目录放进 sys.path)
+import sources.tencent as tc  # noqa: E402
 
 
 def row(code, name, mkt, stype, classify="", pinyin=""):
@@ -57,6 +58,9 @@ def fake(monkeypatch):
         calls.append((keyword, count))
         return [dict(r) for r in SAMPLES.get(keyword, [])]
     monkeypatch.setattr(em, "suggest_rows", suggest)
+    # 东财没候选时会退到腾讯备用源：单测不许联网，默认让它也「没结果」。
+    # 要测备用源本身的用例自己再 patch 一次（见 test_falls_back_to_tencent_*）。
+    monkeypatch.setattr(tc, "suggest_rows_tencent", lambda *_a, **_k: [])
     return calls
 
 
@@ -110,12 +114,88 @@ def test_api_failure_says_type_the_code(monkeypatch, capsys):
     def boom(*_a, **_k):
         raise ConnectionError("reset")
     monkeypatch.setattr(em, "suggest_rows", boom)
+    monkeypatch.setattr(tc, "suggest_rows_tencent", boom)   # 两个源都挂
     with pytest.raises(S.SearchError, match="直接输入代码"):
         S.search("茅台")
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps({"query": "茅台"})))
     S.main()
     d = json.loads(capsys.readouterr().out)
     assert d["ok"] is False and "直接输入代码" in d["error"]
+
+
+def test_falls_back_to_tencent_when_eastmoney_returns_poison(monkeypatch):
+    """东财按客户端指纹返回固定缓存毒药（没有 QuotationCodeTable）时，
+    suggest_rows 会抛错，这里必须据此退到腾讯，而不是给用户一个空的「没找到」。"""
+    def poison(*_a, **_k):
+        raise RuntimeError("东财搜索返回的不是候选表（顶层字段：['code', 'extra', 'result']）")
+    monkeypatch.setattr(em, "suggest_rows", poison)
+    monkeypatch.setattr(tc, "suggest_rows_tencent", lambda *_a, **_k: [
+        row("600519", "贵州茅台", "1", "沪A", "GP-A", "GZMT"),
+    ])
+    matches, source = S.search_ex("茅台")
+    assert [m["symbol"] for m in matches] == ["600519"]
+    assert "腾讯" in source
+    assert S.build({"query": "茅台"})["source"] == source, "返回里要如实说用的是哪个源"
+
+
+def test_empty_table_does_not_fall_back(monkeypatch):
+    """东财正常返回空表 = 真的没这个词，不该再等一次备用源（否则每次输错字都白等 10 秒）。"""
+    called = []
+    monkeypatch.setattr(em, "suggest_rows", lambda *_a, **_k: [])
+    monkeypatch.setattr(tc, "suggest_rows_tencent", lambda *_a, **_k: called.append(1) or [])
+    assert S.search("zzzqqq") == []
+    assert called == []
+
+
+def test_falls_back_to_tencent_when_eastmoney_raises(monkeypatch):
+    def boom(*_a, **_k):
+        raise ValueError("Expecting value: line 1 column 1 (char 0)")   # JSONP 没剥干净时的现场
+    monkeypatch.setattr(em, "suggest_rows", boom)
+    monkeypatch.setattr(tc, "suggest_rows_tencent", lambda *_a, **_k: [
+        row("00700", "腾讯控股", "116", "港股", "GP", "TXKG"),
+    ])
+    assert [m["symbol"] for m in S.search("腾讯")] == ["00700.HK"]
+
+
+def test_tencent_fallback_maps_rows_to_the_same_shape():
+    """备用源返回的行必须能直接被 _match_of 认（东财口径），否则退源等于没退。"""
+    from sources.tencent import _tencent_suggest_row as t
+    assert t("sh", "600519", "贵州茅台", "gzmt", "GP-A") == {
+        "Code": "600519", "Name": "贵州茅台", "PinYin": "GZMT", "Classify": "GP-A",
+        "MktNum": "1", "SecurityTypeName": "沪A"}
+    assert t("sz", "000001", "平安银行", "payh", "GP-A")["SecurityTypeName"] == "深A"
+    assert t("bj", "920047", "诺思兰德", "nsld", "GP-A")["SecurityTypeName"] == "京A"
+    assert t("sh", "510300", "沪深300ETF华泰柏瑞", "hs300etfhtbr", "ETF")["SecurityTypeName"] == "基金"
+    assert t("hk", "700", "腾讯控股", "txkg", "GP")["Code"] == "00700"
+    assert t("us", "aapl.oq", "苹果", "pg", "GP")["MktNum"] == "105"
+    assert t("us", "ibm.n", "IBM", "ibm", "GP")["MktNum"] == "106"
+    # 指数 / 板块 / 港股权证 不进候选
+    assert t("sh", "000847", "腾讯济安", "txja", "ZS") is None
+    assert t("hk", "13005", "腾讯法兴七三购A", "txfxqsga", "WRT") is None
+
+
+def test_tencent_fallback_parses_real_payload(monkeypatch):
+    """真实响应形状：v_hint="sh~600519~\\u8d35\\u5dde\\u8305\\u53f0~gzmt~GP-A"（中文是 \\uXXXX 转义）。"""
+    class R:
+        content = ('v_hint="sh~600519~\\u8d35\\u5dde\\u8305\\u53f0~gzmt~GP-A^'
+                   'hk~00700~\\u817e\\u8baf\\u63a7\\u80a1~txkg~GP^'
+                   'sh~000847~\\u817e\\u8baf\\u6d4e\\u5b89~txja~ZS";').encode()
+        def raise_for_status(self): return None
+
+    monkeypatch.setattr(tc, "http_get", lambda *a, **k: R())
+    rows = tc.suggest_rows_tencent("腾讯", 10)
+    assert [(r["Code"], r["Name"], r["SecurityTypeName"]) for r in rows] == [
+        ("600519", "贵州茅台", "沪A"), ("00700", "腾讯控股", "港股")]
+    assert tc._tencent_suggest_row("sh", "600519", "贵州茅台", "gzmt", "GP-A")["PinYin"] == "GZMT"
+
+
+def test_tencent_fallback_empty_marker(monkeypatch):
+    """腾讯查不到时返回 v_hint="N"; —— 要当成「没有候选」，不是解析失败。"""
+    class R:
+        content = b'v_hint="N";'
+        def raise_for_status(self): return None
+    monkeypatch.setattr(tc, "http_get", lambda *a, **k: R())
+    assert tc.suggest_rows_tencent("920047", 10) == []
 
 
 @pytest.mark.parametrize("q, pick, reason", [
@@ -153,6 +233,22 @@ def test_ambiguous_rule_narrows_candidates(fake):
     it = S.build({"queries": ["ndsd", "pa"]})["items"]
     assert [m["symbol"] for m in it[0]["matches"]] == ["300750", "03750.HK"], "拼音一致的两个宁德时代，美股债券 ETF 不列"
     assert len(it[1]["matches"]) == 2, "没有规则命中时交回全部候选"
+
+
+def test_api_failure_still_accepts_codes(monkeypatch):
+    """联想接口挂了，代码类输入照样能用：不报错、按代码原样使用（2026-10 东财返回 JSONP 时的现场）。"""
+    def boom(*_a, **_k):
+        raise ValueError("Expecting value: line 1 column 1 (char 0)")
+    monkeypatch.setattr(em, "suggest_rows", boom)
+    monkeypatch.setattr(tc, "suggest_rows_tencent", boom)   # 两个源都挂
+    for q, want in (("600519", "600519"), ("sh600519", "600519"), ("00700.HK", "00700.HK"), ("hk700", "00700.HK")):
+        assert S.search(q) == [], "代码类输入不依赖联想接口"
+        assert S.resolve(q, [])["pick"]["symbol"] == want
+    out = S.build({"queries": ["600519", "00700.HK"]})
+    assert [i["pick"]["symbol"] for i in out["items"]] == ["600519", "00700.HK"]
+    # 名称类输入仍然要如实报错，不能假装「没找到」
+    with pytest.raises(S.SearchError, match="直接输入代码"):
+        S.search("茅台")
 
 
 def test_resolve_explicit_codes_survive_empty_search(fake):

@@ -12,10 +12,12 @@ from __future__ import annotations
 import contextvars
 import json
 import os
+import re
 import sys
 import threading
 import time
 import urllib.request
+from urllib.parse import urlparse
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -104,6 +106,25 @@ def _guess_ext(content_type: str, url: str, content: bytes = b"") -> str:
 _sessions: dict[str, Any] = {}
 _lock = threading.Lock()
 
+#: 国内数据源域名后缀：**必须直连**。
+#: 🔴 启动器只清了 `HTTP_PROXY` 这类环境变量，挡不住 Windows **注册表里的系统代理**（WinINET）——
+#:    requests 的 `trust_env=True` 在 Windows 上会读注册表（urllib.getproxies），
+#:    于是「代理开着时国内数据源被弄断」（2026-10 现场）。而且不一定抛 ProxyError：
+#:    代理回一段 HTML 错误页时，会被当成"取到了数据"往下走，比报错更难查。
+#:    所以按域名分流，不靠「先试代理、失败再直连」—— 那要多等一个超时，且挡不住上面那种假成功。
+DOMESTIC_SUFFIXES = (
+    "eastmoney.com", "dfcfw.com", "gtimg.cn", "qq.com", "sinajs.cn", "sina.com.cn", "sina.cn",
+    "szse.cn", "sse.com.cn", "cninfo.com.cn", "csindex.com.cn", "bse.cn", "cffex.com.cn",
+    "gfex.com.cn", "sge.com.cn", "chinamoney.com.cn", "cls.cn", "baidu.com", "163.com",
+    "xueqiu.com", "10jqka.com.cn", "cnstock.com", "hexun.com", "baostock.com",
+)
+
+
+def is_domestic(url: str) -> bool:
+    """这个 URL 是不是国内数据源（国内源不该走代理）。"""
+    host = (urlparse(str(url)).hostname or "").lower()
+    return any(host == s or host.endswith("." + s) for s in DOMESTIC_SUFFIXES)
+
 
 def _session(trust_env: bool = True):
     import requests
@@ -118,10 +139,15 @@ def _session(trust_env: bool = True):
         return _sessions[key]
 
 
+def _session_for(url: str):
+    """国内源直连（trust_env=False，连环境变量代理也不用），境外源沿用系统/环境代理。"""
+    return _session(not is_domestic(url))
+
+
 def http_get(url: str, params: Optional[dict] = None, headers: Optional[dict] = None, timeout: int = 15,
              encoding: Optional[str] = None, ext: Optional[str] = None, **kw):
     """GET → requests.Response;响应原文自动落盘。encoding 指定解码(如 gbk)。"""
-    r = _session(True).get(url, params=params, headers=headers, timeout=timeout, **kw)
+    r = _session_for(url).get(url, params=params, headers=headers, timeout=timeout, **kw)
     if encoding:
         r.encoding = encoding
     cap = _current.get()
@@ -132,7 +158,7 @@ def http_get(url: str, params: Optional[dict] = None, headers: Optional[dict] = 
 def http_post(url: str, data: Optional[dict] = None, json_body: Optional[Any] = None, params: Optional[dict] = None, headers: Optional[dict] = None,
               timeout: int = 15, ext: Optional[str] = None, **kw):
     """POST(表单 data 或 JSON body)→ requests.Response;响应原文自动落盘。"""
-    r = _session(True).post(url, data=data, json=json_body, params=params, headers=headers, timeout=timeout, **kw)
+    r = _session_for(url).post(url, data=data, json=json_body, params=params, headers=headers, timeout=timeout, **kw)
     cap = _current.get()
     r._vra_raw_ref = cap.record(r.content, ext or _guess_ext(r.headers.get("Content-Type", ""), r.url, r.content), r.url) if cap is not None else None  # type: ignore[attr-defined]
     return r
@@ -167,13 +193,57 @@ def em(url: str, params: Optional[dict] = None, headers: Optional[dict] = None, 
 def em_json(url: str, **kw) -> Any:
     r = em(url, **kw)
     r.raise_for_status()
-    return r.json()
+    try:
+        return r.json()
+    except ValueError:
+        # 东财部分接口（如 searchapi 的 suggest/get）按客户端指纹返回 JSONP：`cb({...});`。
+        # 直接 r.json() 会抛 JSONDecodeError，整条取数链路就被一个包装层弄崩。
+        # 只在标准解析失败后才剥包装：正常 JSON 走的还是 r.json()，行为不变。
+        return parse_json_lenient(r.content.decode("utf-8", "replace"))
+
+
+#: JSONP / 变量赋值包装：`cb(...)`、`jQuery123_456(...)`、`var data = {...}`、`dt(...);`
+_JSONP_CALL = re.compile(r"^[A-Za-z_$][\w$.]*\s*\(\s*(.*?)\s*\)\s*;?\s*$", re.S)
+_JSONP_ASSIGN = re.compile(r"^(?:var|let|const)\s+[A-Za-z_$][\w$]*\s*=\s*(.*?)\s*;?\s*$", re.S)
+
+
+def strip_jsonp(text: str) -> str:
+    """剥掉 JSONP 包装，返回里面的 JSON 文本；没有包装就原样返回。
+
+    只认「整段就是一个函数调用 / 变量赋值」这一种形状：正文里的 `)`、`;` 不会误伤，
+    因为正则是从整段首尾锚定的，中间多出来的内容会让匹配失败（此时原样返回，交给调用方报错）。
+    """
+    t = (text or "").lstrip("\ufeff").strip()
+    if not t or t[0] in "[{\"":
+        return t
+    m = _JSONP_CALL.match(t) or _JSONP_ASSIGN.match(t)
+    return m.group(1).strip() if m else t
+
+
+def parse_json_lenient(text: str) -> Any:
+    """先按 JSON 解析，失败再剥 JSONP 包装重试一次。两次都不行就抛原来的 JSONDecodeError。"""
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        inner = strip_jsonp(text)
+        if inner == (text or "").strip():
+            raise
+        return json.loads(inner)
 
 
 def urlopen_bytes(url: str, headers: Optional[dict] = None, timeout: int = 15, ext: str = "txt") -> bytes:
-    """标准库取原文(上游若干脚本用 urllib),同样落盘。"""
+    """标准库取原文(上游若干脚本用 urllib),同样落盘。
+
+    🔴 标准库的 urlopen **也**会读系统代理（urllib.getproxies → Windows 注册表），
+       国内源照样会被代理弄断，所以这里跟 requests 走同一套分流。
+    """
     req = urllib.request.Request(url, headers={"User-Agent": UA, **(headers or {})})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    if is_domestic(url):
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        resp_ctx = opener.open(req, timeout=timeout)
+    else:
+        resp_ctx = urllib.request.urlopen(req, timeout=timeout)
+    with resp_ctx as resp:
         data = resp.read()
     cap = _current.get()
     if cap is not None:

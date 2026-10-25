@@ -100,13 +100,38 @@ def _clean_query(q: Any) -> str:
     return q
 
 
-def search(query: str, limit: int = DEFAULT_LIMIT) -> List[Dict[str, Any]]:
-    """一次联想：去重后按接口原顺序给前 limit 个。接口不通抛 SearchError。"""
+def search_ex(query: str, limit: int = DEFAULT_LIMIT) -> tuple[List[Dict[str, Any]], str]:
+    """一次联想：返回（去重后的前 limit 个候选，用的哪个源）。
+
+    🔴 代码类输入（600519 / 00700.HK / AAPL）**不依赖联想接口**：两个源都不通时返回空候选，
+    由 ``resolve`` 按「代码原样使用」处理。搜索框里敲完代码按回车照样能加，
+    不该因为联想服务挂了就整条链路报错（2026-10 实测东财搜索会返回 JSONP / 缓存粘滞）。
+
+    🔴 东财不可用时退到腾讯 smartbox：东财这个接口会按客户端指纹返回**固定的缓存毒药**
+    （不同关键词拿到同一份、且结构是 passportWeb 而不是 QuotationCodeTable）。
+    ``suggest_rows`` 遇到这种形状会抛错，这里据此降级；东财**正常返回空表**（真的没这个词）
+    则不降级 —— 否则每次输错字都要白等一次备用源。
+    """
     from sources.eastmoney import suggest_rows   # 延迟导入：入参校验不需要联网层
+    rows: List[Dict[str, Any]] = []
+    first_error: Optional[Exception] = None
+    source = "东财搜索联想"
     try:
         rows = suggest_rows(query, FETCH_COUNT)
-    except Exception as exc:  # noqa: BLE001 — 网络 / 风控 / 返回不是 JSON，统一成一句能看懂的话
-        raise SearchError(f"名称搜索暂时不通（{type(exc).__name__}），可以直接输入代码：600519 / 00700.HK / AAPL") from exc
+    except Exception as exc:  # noqa: BLE001 — 网络 / 风控 / 返回不是 JSON / 被路由到别的接口
+        first_error = exc
+    tencent_answered = False
+    if first_error is not None:
+        try:
+            from sources.tencent import suggest_rows_tencent
+            rows = suggest_rows_tencent(query, FETCH_COUNT)
+            tencent_answered = True
+            if rows:
+                source = "腾讯联想（东财不可用时的备用源）"
+        except Exception:  # noqa: BLE001 — 备用源也挂，就用 first_error 报出来
+            pass
+    if not rows and first_error is not None and not tencent_answered and normalize_code(query) is None:
+        raise SearchError(f"名称搜索暂时不通（{type(first_error).__name__}），可以直接输入代码：600519 / 00700.HK / AAPL") from first_error
     out: List[Dict[str, Any]] = []
     seen = set()
     for row in rows:
@@ -114,7 +139,12 @@ def search(query: str, limit: int = DEFAULT_LIMIT) -> List[Dict[str, Any]]:
         if m and m["symbol"] not in seen:
             seen.add(m["symbol"])
             out.append(m)
-    return out[:limit]
+    return out[:limit], source
+
+
+def search(query: str, limit: int = DEFAULT_LIMIT) -> List[Dict[str, Any]]:
+    """一次联想：去重后按接口原顺序给前 limit 个。两个源都不通时抛 SearchError（代码类输入除外）。"""
+    return search_ex(query, limit)[0]
 
 
 def resolve(query: str, matches: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -159,18 +189,22 @@ def build(req: Dict[str, Any]) -> Dict[str, Any]:
         if len(qs) > MAX_BATCH:
             raise SearchError(f"一次最多查 {MAX_BATCH} 个名称")
         items = []
+        source = "东财搜索联想"
         for raw in qs:
             q = _clean_query(raw)
-            matches = search(q, DEFAULT_LIMIT)
+            matches, used = search_ex(q, DEFAULT_LIMIT)
+            if used != source:
+                source = used
             # code：这段文字如果当代码理解是什么（纯字母没搜到时，界面可以让用户确认「就按美股代码加」）
             # resolve 收窄了候选时，它给的 matches 覆盖前面的完整列表
             items.append({"query": q, "code": normalize_code(q), "matches": matches, **resolve(q, matches)})
-        return {"items": items, "source": "东财搜索联想"}
+        return {"items": items, "source": source}
     q = _clean_query(req.get("query"))
     limit = req.get("limit", DEFAULT_LIMIT)
     if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= MAX_LIMIT:
         raise SearchError(f"limit 要是 1 到 {MAX_LIMIT} 的整数")
-    return {"query": q, "matches": search(q, limit), "source": "东财搜索联想"}
+    matches, source = search_ex(q, limit)
+    return {"query": q, "matches": matches, "source": source}
 
 
 CATALOG = {

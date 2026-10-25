@@ -7,6 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -43,6 +44,7 @@ import json
 from pathlib import Path
 import sys
 import time
+import pytest
 import common
 
 lock_file, ready_file, go_file, result_file = sys.argv[1:]
@@ -145,3 +147,96 @@ def test_board_fund_flow_stops_on_empty_page(monkeypatch):
     monkeypatch.setattr(eastmoney, "_push2_json", fake)
     r = eastmoney.board_fund_flow("industry", "today", 500)
     assert len(r["rows"]) == 100
+
+
+# ---------------- 东财搜索接口：JSONP 包装 + 缓存粘滞（2026-10 现场） ----------------
+class _FakeResp:
+    def __init__(self, body: str, as_json_fails: bool = True):
+        self.content = body.encode("utf-8")
+        self.text = body
+        self.status_code = 200
+        self._fails = as_json_fails
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        if self._fails:
+            raise ValueError("Expecting value: line 1 column 1 (char 0)")
+        import json as _j
+        return _j.loads(self.text)
+
+
+def test_em_json_unwraps_jsonp(monkeypatch):
+    """东财搜索接口按客户端指纹返回 JSONP：`cb({...});`。标准解析会抛 JSONDecodeError，整条链路就崩。"""
+    from sources import _http
+    body = 'cb({"QuotationCodeTable":{"Data":[{"Code":"600519","Name":"贵州茅台"}],"Status":0}});'
+    monkeypatch.setattr(_http, "em", lambda *a, **k: _FakeResp(body))
+    d = _http.em_json("https://searchapi.eastmoney.com/api/suggest/get")
+    assert d["QuotationCodeTable"]["Data"][0]["Code"] == "600519"
+
+
+def test_em_json_keeps_plain_json_untouched(monkeypatch):
+    """正常 JSON 仍走 resp.json()，行为不变（不能因为加容错就把正常路径也绕开）。"""
+    from sources import _http
+    calls = []
+
+    class R(_FakeResp):
+        def json(self):
+            calls.append(1)
+            return {"ok": True}
+
+    monkeypatch.setattr(_http, "em", lambda *a, **k: R("ignored", as_json_fails=False))
+    assert _http.em_json("https://x") == {"ok": True}
+    assert calls == [1]
+
+
+def test_strip_jsonp_variants():
+    from sources._http import strip_jsonp
+    assert strip_jsonp('cb({"a":1});') == '{"a":1}'
+    assert strip_jsonp('jQuery1234567890_1699999999({"a":1})') == '{"a":1}'
+    assert strip_jsonp('var data = [1,2];') == '[1,2]'
+    assert strip_jsonp('  {"a":1}  ') == '{"a":1}', "本来就干净的原样返回"
+    # 正文里带右括号 / 分号也不能被切坏
+    assert strip_jsonp('cb({"note":"a);b"});') == '{"note":"a);b"}'
+
+
+def test_em_json_still_raises_on_garbage(monkeypatch):
+    """真不是 JSON 也不能吞掉：解析失败必须照旧报错，不能返回空对象冒充成功。"""
+    import json as _json
+    from sources import _http
+    monkeypatch.setattr(_http, "em", lambda *a, **k: _FakeResp("<html>502 Bad Gateway</html>"))
+    with pytest.raises(_json.JSONDecodeError):
+        _http.em_json("https://x")
+
+
+def test_suggest_rows_sends_cache_buster(monkeypatch):
+    """同一客户端换关键词会命中上一次的缓存（粘滞）：请求必须带毫秒级 `_`，让 URL 每次不同。"""
+    seen = []
+
+    def fake(url, params=None, timeout=None, **kw):
+        seen.append(dict(params or {}))
+        return {"QuotationCodeTable": {"Data": [{"Code": "600519"}]}}
+
+    monkeypatch.setattr(eastmoney, "em_json", fake)
+    eastmoney.suggest_rows("茅台", 5)
+    eastmoney.suggest_rows("600519", 5)
+    assert [p["input"] for p in seen] == ["茅台", "600519"]
+    assert all(p.get("_", "").isdigit() for p in seen), "缺了 `_` 就会被 CDN / 服务端缓存粘住"
+
+
+def test_suggest_rows_raises_on_foreign_schema(monkeypatch):
+    """指纹路由会把请求送到别的接口（`{code, extra, result:{passportWeb}}`）：
+    必须抛错让调用方知道「这个源当前不可用」，静默返回 [] 会被当成「用户搜的词没有结果」。"""
+    monkeypatch.setattr(eastmoney, "em_json", lambda *a, **k: {
+        "code": 0, "msg": "OK", "extra": {},
+        "result": {"passportWeb": [{"uid": "1", "alias": "<em>达利食品</em>"}]},
+    })
+    with pytest.raises(RuntimeError, match="不是候选表"):
+        eastmoney.suggest_rows("600519", 5)
+
+
+def test_suggest_rows_empty_table_is_not_an_error(monkeypatch):
+    """正常返回空表 = 真的没这个词，不能抛错（否则会误触发备用源 / 误报「搜索不通」）。"""
+    monkeypatch.setattr(eastmoney, "em_json", lambda *a, **k: {"QuotationCodeTable": {"Data": [], "Status": 0}})
+    assert eastmoney.suggest_rows("zzzqqq", 5) == []

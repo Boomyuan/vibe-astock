@@ -141,3 +141,73 @@ def ah_premium(code: str, side: str = "A") -> dict:
         out["ah_ratio"] = round(a_price / (h_price * rate), 4)
         out["premium_pct"] = round((out["ah_ratio"] - 1) * 100, 2)
     return out
+
+
+# ---------------- 联想搜索(东财搜索不可用时的备用源) ----------------
+#: 腾讯 smartbox 的类型标签 → 是否进候选。ZS=指数 / ZQ=债券 / BK=板块 一律不进。
+_TC_FUND = {"ETF", "LOF", "FJ", "QDII", "REIT"}
+_TC_US_MKT = {"oq": "105", "n": "106"}      # aapl.oq = NASDAQ / xxx.n = NYSE
+
+
+def _tencent_suggest_row(mkt: str, code: str, name: str, pinyin: str, kind: str) -> Optional[dict]:
+    """一行腾讯联想 → **东财 suggest_rows 同形**的行(Code/Name/MktNum/SecurityTypeName/Classify/PinYin)。
+
+    找标的(_match_of)只认这套字段，把备用源在这里翻译成同一形状，调用方不必区分来源。
+    """
+    if not code or not name:
+        return None
+    base = {"Code": code, "Name": name, "PinYin": pinyin.upper(), "Classify": kind}
+    if mkt in ("sh", "sz", "bj"):
+        if kind in _TC_FUND:
+            stype = "基金"
+        elif kind == "GP-A":
+            stype = {"sh": "沪A", "sz": "深A", "bj": "京A"}[mkt]
+        else:
+            return None      # 指数 / 板块 / 债券 / 期货不进候选
+        return {**base, "MktNum": "1" if mkt == "sh" else "0", "SecurityTypeName": stype}
+    if mkt == "hk":
+        if kind != "GP":
+            return None      # 港股里非正股的(权证等)不进候选
+        return {**base, "Code": code.zfill(5), "MktNum": "116", "SecurityTypeName": "港股"}
+    if mkt == "us":
+        ticker, _, exch = code.partition(".")
+        return {**base, "Code": ticker.upper(), "MktNum": _TC_US_MKT.get(exch.lower(), "107"), "SecurityTypeName": "美股"}
+    return None
+
+
+def suggest_rows_tencent(keyword: str, count: int = 10) -> list[dict]:
+    """腾讯 smartbox 联想,返回东财同形行。**东财搜索不可用时的备用源**。
+
+    原始形状:`v_hint="sh~600519~贵州茅台~gzmt~GP-A^hk~00700~腾讯控股~txkg~GP"`,
+    字段 = 市场~代码~名称~拼音~类型,`^` 分隔多条,中文是 \\uXXXX 转义,查不到时是 `v_hint="N";`。
+
+    🔴 北交所不在这个源里(查 920047 直接返回 N)—— 东财那边挂了就搜不到 BJ,
+       如实少给,不猜号段也不编。
+    🔴 美股代码带交易所后缀(`aapl.oq`),按后缀还原 MktNum;认不出给 107。
+       找标的只按「是不是美股」判断,不影响候选。
+    """
+    import json as _json
+    import re as _re
+    r = http_get("https://smartbox.gtimg.cn/s3/", params={"q": keyword, "t": "all"}, headers=_HDR, timeout=10)
+    r.raise_for_status()
+    m = _re.search(r'v_hint\s*=\s*"(.*)"\s*;?\s*$', r.content.decode("utf-8", "replace"), _re.S)
+    if not m:
+        return []
+    body = m.group(1)
+    try:
+        body = _json.loads(f'"{body}"')   # 响应里中文是 \uXXXX 转义
+    except ValueError:
+        pass
+    if body in ("", "N"):
+        return []
+    out: list[dict] = []
+    for item in body.split("^"):
+        parts = item.split("~")
+        if len(parts) < 5:
+            continue
+        row = _tencent_suggest_row(parts[0].strip().lower(), parts[1].strip(), parts[2].strip(), parts[3].strip(), parts[4].strip().upper())
+        if row:
+            out.append(row)
+        if len(out) >= count:
+            break
+    return out
