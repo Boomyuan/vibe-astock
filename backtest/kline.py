@@ -8,7 +8,9 @@
    不为负时涨跌幅也被放大（茅台 2020 年初原始 1130、等差前复权 870.7）。
    ⇒ 取腾讯不复权价，再用新浪因子换算，换算公式就是取数层的 ``apply_adjust``，只有一份。
 🔴 成交量统一成「股」。腾讯 K 线科创板给股、其余给手 —— 按信封里证据写的单位换算，不按号段猜。
-🔴 北交所明说画不了：腾讯只给最新 1 根，baostock 不支持北交所，不拿一张空图冒充。
+🔴 北交所走**东财 K 线**：腾讯对 920xxx 只返回最新 1 根、baostock 直接不支持，
+   而东财 push2his 有完整历史（实测 920047 自 2020-11-24 起 1434 根）。
+   ⚠️ 那条路的复权是**东财自己的前复权**，不是沪深这套「新浪因子等比换算」，图上要写明。
 🔴 只画 K 线、均线、成交量。不出买卖点、信号或任何「该不该买」的标记。
 
 用法::
@@ -51,7 +53,7 @@ FETCH_TIMEOUT = 60
 
 
 class KlineError(ValueError):
-    """业务上画不了（代码认不出、北交所、取数失败）—— 作为 ``ok: false`` 的原因原样给界面。"""
+    """业务上画不了（代码认不出、该市场没有可用源、取数失败）—— 作为 ``ok: false`` 的原因原样给界面。"""
 
 
 def _num(v: Any, digits: int = 4) -> Optional[float]:
@@ -78,10 +80,42 @@ def _market_today(market: str) -> date:
     return datetime.now(ZoneInfo(MARKET_TZ[market])).date()
 
 
+#: 北交所一次取多少根（东财 lmt 上限 3000）。日线约 5 年，够画周月线
+BJ_KLINE_COUNT = {"day": 1200, "week": 400, "month": 200}
+
+
+def _bj_share(code: str, period: str, adjust: str, out_dir: Path) -> Dict[str, Any]:
+    """北交所：走东财 K 线。
+
+    腾讯 K 线对北交所只返回最新一根、baostock 不支持北交所 —— 东财是唯一能给完整历史的源。
+    ⚠️ 复权口径是**东财自己的前复权**，不是沪深那条「新浪因子等比换算」：
+       同一只票在两种口径下的早年价格会有细微差别，所以图上的说明要写清楚是哪种。
+    🔴 成交量东财给的是**手**，这里换算成股（与沪深那条路统一）。
+    """
+    six = bare(code)
+    env = _run_fetch("em_kline", code, {"period": period, "adjust": adjust, "count": BJ_KLINE_COUNT[period]},
+                     out_dir, sys.executable, FETCH_TIMEOUT)
+    _envelope_ok(env, "东财 K 线")
+    refs = [r for r in (env.get("extra") or {}).get("raw_files") or [] if Path(r).name.startswith("extracted_")]
+    if not refs:
+        raise KlineError("东财 K 线信封里没有抽取后的序列文件")
+    rows = (_read_raw(out_dir, refs[-1]).get("rows")) or []
+    want = f"bj{six}"
+    got = {str(r.get("code") or "") for r in rows}
+    if got != {want}:
+        raise KlineError(f"要的是 {want}，取回来的是 {sorted(got) or '空'} —— 不是同一只，已中止")
+    if not rows:
+        raise KlineError("东财 K 线没返回数据")
+    notes = ["北交所：东财 K 线自带前复权，与沪深那套「新浪因子等比换算」不是同一口径，早年价格会有细微差别"]
+    label = ADJUSTS[adjust] + ("（东财口径）" if adjust != "none" else "")
+    return {"rows": rows, "volume_scale": 100, "source": "东财 K 线", "endpoint": "em_kline",
+            "fetched_at": env.get("fetched_at"), "adjust_label": label, "adjust": adjust, "notes": notes}
+
+
 def _a_share(code: str, period: str, adjust: str, out_dir: Path) -> Dict[str, Any]:
     six, ex = bare(code), code.split(".")[-1]
     if ex == "BJ":
-        raise KlineError("北交所暂时画不了 K 线：腾讯 K 线对北交所只返回最新一根，baostock 也不提供北交所")
+        return _bj_share(code, period, adjust, out_dir)
     try:
         _, is_stock = _a_lookup(six)
     except LoaderError:
@@ -233,8 +267,9 @@ def build(req: Dict[str, Any], out_dir: Path) -> Dict[str, Any]:
 
 
 CATALOG = {
-    "description": "个股 K 线 + 收盘价均线（5/10/20/60）+ 成交量。A 股走腾讯不复权价再按新浪复权因子等比换算；"
-                   "港美股走 Yahoo（拆股已调整、不含分红）。不支持北交所。只给行情，不给买卖点。",
+    "description": "个股 K 线 + 收盘价均线（5/10/20/60）+ 成交量。沪深 A 股走腾讯不复权价再按新浪复权因子等比换算；"
+                   "北交所走东财 K 线（自带前复权，口径与沪深那条不同）；"
+                   "港美股走 Yahoo（拆股已调整、不含分红）。只给行情，不给买卖点。",
     "parameters": {
         "symbol": "600519 / 600519.SH / AAPL / 00700.HK",
         "period": "day（近 5 年）/ week（近 10 年）/ month（全部）",

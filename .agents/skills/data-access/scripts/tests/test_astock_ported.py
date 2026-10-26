@@ -414,8 +414,11 @@ def test_every_mapper_handles_empty_frame(tmp_path, name):
 # ---------- 注册表 ----------
 def test_ported_endpoints_stay_out_of_research_stage_plan():
     eps = [e for e in _reg()["endpoints"] if e.get("mapper_module") == "mappers_astock"]
-    assert len(eps) == 34  # 2026-10-10 删掉和在用源重复的新浪研报、深交所交易日历
-    assert all(e["stages"] == {} and e["compliance"] == "cn-public" and e["module"] in ("astock_ported", "astock_defaults", "em_events") for e in eps)
+    ported = [e for e in eps if e["module"] in ("astock_ported", "astock_defaults", "em_events")]
+    assert len(ported) == 34  # 2026-10-10 删掉和在用源重复的新浪研报、深交所交易日历
+    assert all(e["stages"] == {} and e["compliance"] == "cn-public" for e in eps), "这一组都不进阶段计划"
+    # em_kline 不是移植来的（北交所 K 线，本机新加），借用了同一套表格助手 —— 同样不进阶段计划
+    assert {e["id"] for e in eps} - {e["id"] for e in ported} == {"em_kline"}
 
 
 def test_dead_tdx_market_commands_stay_removed():

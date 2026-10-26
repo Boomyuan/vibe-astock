@@ -1504,6 +1504,32 @@
         "CN"
       ],
       "compliance": "cn-public",
+      "symbol_kind": "cn6",
+      "symbol_param": "code",
+      "stages": {},
+      "enabled": true,
+      "mapper_module": "mappers_astock",
+      "id": "em_kline",
+      "title": "东财 K 线(日 / 周 / 月前后复权,含成交额;北交所唯一可用来源)",
+      "layer": "1 行情",
+      "source": "eastmoney",
+      "module": "eastmoney",
+      "function": "eastmoney_kline",
+      "mapper": "eastmoney_kline_map",
+      "endpoint_label": "push2his/stock/kline/get",
+      "args": {
+        "period": "day",
+        "adjust": "qfq",
+        "count": 800
+      },
+      "sample": "920047",
+      "notes": "period=day/week/month;adjust=none/qfq/hfq;count 最多 3000 根。成交量单位是手,另带成交额(元)。🔴 北交所(920xxx / 43xxxx / 83xxxx)只有这条路:腾讯 K 线对北交所只返回最新 1 根、baostock 不支持。⚠️ 复权口径是东财自己的前复权,与沪深那条「新浪因子等比换算」不同,画图时要说清"
+    },
+    {
+      "market": [
+        "CN"
+      ],
+      "compliance": "cn-public",
       "symbol_kind": "none",
       "stages": {},
       "enabled": true,

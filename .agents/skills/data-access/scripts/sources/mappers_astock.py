@@ -165,6 +165,30 @@ def tencent_kline_map(result, ctx: dict) -> dict:
     return out(evs, extra={"code": code, "period": period, "adjust": adj, "rows": len(rows), "last3": rows[-3:], "calc_hint": _hint(cols)})
 
 
+def eastmoney_kline_map(result, ctx: dict) -> dict:
+    """东财 K 线:与腾讯那条同形,另外带成交额。北交所只有这一条路。"""
+    rows, attrs = _table(result)
+    if not rows:
+        return out([], status="failed", reason="东财 K 线返回 0 根")
+    c = _bind(ctx, rows, attrs)
+    code = str(rows[-1].get("code") or ctx["symbol"])
+    rows = sorted(rows, key=lambda r: str(r.get("date")))
+    last = rows[-1]
+    adj = {"qfq": "qfq", "hfq": "hfq"}.get(str(last.get("adjust") or ""), "none")
+    unit, vunit = _cn_price_unit(code), _cn_volume_unit(code)
+    period = str(ctx["args"].get("period") or "day")
+    note = f"{code} {period};复权={adj}(东财口径,非新浪因子等比换算);成交量单位手;含成交额"
+    evs = _fields(c, last, [("close", f"kline_close_{adj}", unit), ("open", f"kline_open_{adj}", unit),
+                            ("high", f"kline_high_{adj}", unit), ("low", f"kline_low_{adj}", unit),
+                            ("volume", "kline_volume", vunit), ("amount", "kline_amount", "元")],
+                  _d(last.get("date")), record_key=f"{code}:{period}:{last.get('date')}",
+                  note=note, as_of=_d(last.get("date")), adjustment=adj)
+    evs.append(_count(c, "kline_points", len(rows), "根", _span(rows, "date"), note=f"{code} {period}"))
+    cols = {"date": "date", "open": "open", "high": "high", "low": "low", "close": "close", "volume": "volume"}
+    return out(evs, extra={"code": code, "period": period, "adjust": adj, "rows": len(rows),
+                           "last3": rows[-3:], "has_amount": True, "calc_hint": _hint(cols)})
+
+
 def tdx_daily_package_map(result, ctx: dict) -> dict:
     rows, attrs = _table(result)
     c = _bind(ctx, rows, attrs)

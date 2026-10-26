@@ -29,6 +29,12 @@ def _tx_rows(code="sh600519", n=70, adjust="none"):
              "close": 101.0 + i, "volume": 1000.0 + i} for i, d in enumerate(_days(n))]
 
 
+def _bj_rows(code="bj920047", n=70, adjust="qfq"):
+    """东财 K 线的行：成交量单位是手，另带成交额。"""
+    return [{"code": code, "adjust": adjust, "date": d, "open": 13.0 + i, "high": 13.6 + i, "low": 12.9 + i,
+             "close": 13.2 + i, "volume": 300.0 + i, "amount": 4.0e7 + i} for i, d in enumerate(_days(n))]
+
+
 def _fake_fetch(calls, *, rows=None, unit="手", factors=None, factor_status="ok", yahoo=None):
     """按端点写一份 raw 文件并返回信封，记下每次调用的参数。"""
     def fake(endpoint, symbol, args, out_dir, python, timeout):
@@ -40,6 +46,11 @@ def _fake_fetch(calls, *, rows=None, unit="手", factors=None, factor_status="ok
             return {"status": "ok", "fetched_at": "2026-10-08T15:31:00+08:00",
                     "evidence": [{"field": "kline_volume", "unit": unit}],
                     "extra": {"raw_files": ["raw/tencent_page.html", "raw/extracted_tx.json"]}}
+        if endpoint == "em_kline":
+            (raw / "extracted_em.json").write_text(json.dumps({"rows": rows if rows is not None else _bj_rows()}))
+            return {"status": "ok", "fetched_at": "2026-10-26T16:20:00+08:00",
+                    "evidence": [{"field": "kline_volume", "unit": "手"}],
+                    "extra": {"raw_files": ["raw/extracted_em.json"]}}
         if endpoint == "sina_adjust_factor":
             data = factors if factors is not None else [{"d": "2026-01-05", "f": "1.0"}, {"d": "1900-01-01", "f": "2.0"}]
             (raw / "f.js").write_text("var qfq=" + json.dumps({"total": len(data), "data": data}))
@@ -94,12 +105,26 @@ def test_moving_averages_and_change(monkeypatch, tmp_path):
     assert r["window_low"] == {"value": s["low"][0], "date": s["dates"][0]}
 
 
-def test_beijing_rejected_before_any_fetch(monkeypatch, tmp_path):
+def test_beijing_uses_eastmoney_kline_not_tencent(monkeypatch, tmp_path):
+    """北交所：腾讯只给最新一根、baostock 不支持 —— 走东财 K 线，且不碰腾讯那条路。"""
     calls = []
     monkeypatch.setattr(K, "_run_fetch", _fake_fetch(calls))
-    with pytest.raises(K.KlineError, match="北交所"):
-        K.build({"symbol": "920001"}, tmp_path)
-    assert calls == []
+    r = K.build({"symbol": "920047", "period": "day", "adjust": "qfq", "charts": True}, tmp_path)
+    assert [c[0] for c in calls] == ["em_kline"], "只调东财，不调腾讯、也不调新浪因子"
+    em = calls[0]
+    assert em[1] == "920047.BJ" and em[2]["period"] == "day" and em[2]["adjust"] == "qfq"
+    assert "东财" in r["source"] and r["adjust_label"] == "前复权（东财口径）"
+    # 成交量：东财给手，换算成股
+    assert r["ui_only"]["series"]["volume"][0] == 30000
+    assert any("东财" in n and "口径" in n for n in r["notes"]), "两种复权口径不同，图上要说清"
+
+
+def test_beijing_still_refuses_a_different_instrument(monkeypatch, tmp_path):
+    """东财回的不是这只票：宁可报错，也不画成另一只。"""
+    calls = []
+    monkeypatch.setattr(K, "_run_fetch", _fake_fetch(calls, rows=_bj_rows(code="bj920002")))
+    with pytest.raises(K.KlineError, match="不是同一只"):
+        K.build({"symbol": "920047"}, tmp_path)
 
 
 def test_wrong_instrument_and_wrong_adjust_are_rejected(monkeypatch, tmp_path):
@@ -182,10 +207,11 @@ def test_main_catalog_and_error_are_json(monkeypatch, capsys):
     K.main()
     cat = json.loads(capsys.readouterr().out)
     assert cat["ok"] is True and "北交所" in cat["catalog"]["description"]
-    monkeypatch.setattr(sys, "stdin", io.StringIO('{"symbol":"920001"}'))
+    # 北交所现在能画了（走东财），错误用例换成真的认不出的代码
+    monkeypatch.setattr(sys, "stdin", io.StringIO('{"symbol":"EURUSD"}'))
     K.main()
     out = json.loads(capsys.readouterr().out)
-    assert out["ok"] is False and "北交所" in out["error"]
+    assert out["ok"] is False and out["error"], "认不出的代码要如实报错"
     blob = json.dumps(cat, ensure_ascii=False)
     assert not any(w in blob for w in ("目标价", "买入信号", "卖出信号", "评级")), "只给行情，不给买卖建议"
 

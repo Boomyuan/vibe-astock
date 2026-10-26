@@ -670,6 +670,54 @@ _GLOBAL_SECID: dict = {}
 _MKT_SUFFIX = {105: "O", 106: "N", 107: "A"}
 
 
+# ---------------- K 线(北交所用它;沪深走腾讯不复权 + 新浪因子) ----------------
+_EM_KLT = {"day": 101, "week": 102, "month": 103}
+_EM_FQT = {"none": 0, "qfq": 1, "hfq": 2}
+
+
+def eastmoney_kline(code: str, period: str = "day", adjust: str = "qfq", count: int = 800):
+    """东财 K 线(日 / 周 / 月,可前复权),**带成交额**;北交所有完整历史。
+
+    🔴 北交所目前唯一能画图的来源:腾讯 K 线对 920xxx 只返回最新 1 根,baostock 直接不支持。
+       实测 920047(诺思兰德)自 2020-11-24 起 1434 根、920002(万达轴承)可取到最新交易日。
+    🔴 成交量单位是**手**(与东财其它接口一致);amount 取 f57(元),腾讯那条路没有成交额。
+    ⚠️ 复权口径是**东财自己的**前复权,不是沪深那条「新浪因子等比换算」的路子 ——
+       调用方要把这件事写在图上,别让两种口径看起来一样。
+    """
+    import pandas as pd
+    klt = _EM_KLT.get(period)
+    if klt is None:
+        raise ValueError(f"period 只支持 {'/'.join(_EM_KLT)}")
+    fqt = _EM_FQT.get(adjust)
+    if fqt is None:
+        raise ValueError(f"adjust 只支持 {'/'.join(_EM_FQT)}")
+    digits, market = norm_ticker(code, stock_only=True)
+    d = _push2his_json("/api/qt/stock/kline/get", params={
+        "secid": em_secid(digits, market), "klt": klt, "fqt": fqt,
+        "fields1": "f1,f2,f3,f4,f5,f6", "fields2": "f51,f52,f53,f54,f55,f56,f57",
+        "lmt": str(max(1, min(int(count), 3000))), "end": "20500101",
+    }, timeout=20)
+    klines = ((d.get("data") or {}).get("klines") or [])
+    rows = []
+    for line in klines:
+        p = line.split(",")
+        if len(p) < 6:
+            continue
+        rows.append({"date": p[0], "open": float(p[1]), "close": float(p[2]), "high": float(p[3]),
+                     "low": float(p[4]), "volume": float(p[5]),
+                     "amount": float(p[6]) if len(p) > 6 and p[6] not in ("", "-") else None})
+    if not rows:
+        raise RuntimeError(f"东财 K 线返回 0 根({market} {digits})")
+    df = pd.DataFrame(rows)
+    df.insert(0, "code", f"{market.lower()}{digits}")
+    df["adjust"] = "none" if adjust == "none" else adjust
+    df["source"] = "eastmoney"
+    df.attrs["period"] = period
+    df.attrs["adjust"] = df["adjust"].iloc[0]
+    df.attrs["has_amount"] = True
+    return df
+
+
 def suggest_rows(keyword: str, count: int = 10) -> list[dict]:
     """东财搜索框同款联想接口(支持代码 / 中文名 / 拼音首字母),原样返回各行:
     Code / Name / MktNum / SecurityTypeName / Classify / PinYin。不做市场过滤,由调用方按需筛。
