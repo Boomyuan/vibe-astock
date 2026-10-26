@@ -5,6 +5,7 @@ import { PageTabs, type PageTab } from "@/components/ui/PageTabs";
 import { Disclaimer } from "@/components/ui/Disclaimer";
 import { cn } from "@/lib/utils";
 import { usePrivacyMode } from "@/hooks/usePrivacyMode";
+import { useAiPageIdle } from "../../../core/ai/pageContext";
 import type { AttributionView, EnvView, ExcursionView } from "@/lib/journal";
 import { useJournal, useJournalExtra } from "@/journal/useJournal";
 import { Panel } from "@/journal/bits";
@@ -29,6 +30,9 @@ const isTab = (v: string | undefined): v is Tab => TABS.some((t) => t.key === v)
  * 🔴 只统计自己的历史行为,不预测市场、不给下一笔建议。
  */
 export function Journal() {
+  // 🔴 这一页**故意**不登记 AI 页面上下文（个人交易数据不进任何提示词，见文件头）。
+  //    但要登记「为什么不能问」：否则「问 Agent」只是灰着，看起来像坏了。
+  useAiPageIdle("交易日志属于个人数据，不提供给 AI。");
   const { tab: rawTab } = useParams();
   const tab: Tab = isTab(rawTab) ? rawTab : "records";
   const navigate = useNavigate();

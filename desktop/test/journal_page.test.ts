@@ -210,8 +210,14 @@ test("模式卡:版本表、样本不足不比较", async () => {
 test("交易日志不登记 AI 页面上下文:个人交易数据不进 AI", () => {
   const dir = new URL("../src/verticals/finance/journal/", import.meta.url);
   const files = [new URL("../src/verticals/finance/pages/Journal.tsx", import.meta.url), ...readdirSync(dir).map((f) => new URL(f, dir))];
-  // 注释里会写「不调 useAiPage」,所以只查真正的导入和调用
-  for (const f of files) assert.doesNotMatch(readFileSync(f, "utf8"), /ai\/pageContext["']|\buseAiPage\s*\(/, `${f.pathname} 不该接 AI 页面上下文`);
+  // 注释里会写「不调 useAiPage」,所以只查真正的调用。
+  // 🔴 允许 `useAiPageIdle`（只说「这一页为什么不提供给 AI」，不带任何数据）——
+  //    原来连模块都不许导入，结果按钮只能灰着，用户以为 AI 坏了（2026-10-26 现场）。
+  for (const f of files) {
+    const src = readFileSync(f, "utf8");
+    assert.doesNotMatch(src, /\buseAiPage\s*\(/, `${f.pathname} 不该登记 AI 页面上下文（那是数据通道）`);
+    assert.doesNotMatch(src, /\buseAiDraft\s*\(/, `${f.pathname} 不该往 AI 输入框里塞交易数据`);
+  }
 });
 
 test("🔴 隐私模式:编辑标注、补成交、记一笔里的价位 / 股数 / 费用输入框换成密码样式(2026-10-11 审计)", async () => {

@@ -15,7 +15,7 @@ import { Sparkles, Trash2, X } from "lucide-react";
 
 import { cn } from "../lib/cn";
 import { AiComposer, AiMessages } from "./AiMessages";
-import { draftFor, useAiDraftInbox, useAiWired, useCurrentAiPage } from "./pageContext";
+import { draftFor, useAiDraftInbox, useAiWired, useCurrentAiPage, useAiIdleReason } from "./pageContext";
 import { type AiSend, useAiChat } from "./useAiChat";
 
 export interface AiDockCopy {
@@ -72,6 +72,8 @@ export function AiDock({ send, configured, copy, renderReplyActions, renderReply
     ro?.observe(el);
     return () => { ro?.disconnect(); root.style.removeProperty("--ai-trigger-space"); };
   }, []);
+  const idleReason = useAiIdleReason();
+  const idleNote = idleReason ?? "这一页暂时没有可聊的内容：数据还没取到。";
   const chat = useAiChat(page?.key ?? "", send);
   const { abort } = chat;
   const pageKey = page?.key ?? "";
@@ -123,11 +125,14 @@ export function AiDock({ send, configured, copy, renderReplyActions, renderReply
       <button
         ref={triggerRef}
         onClick={() => setOpen(true)}
-        disabled={!page}
+        // 🔴 只有"接线没接上"才真的禁用。这一页没内容时按钮**点得动**：
+        //    点开就说明为什么（数据没取到 / 个人数据不提供），而不是灰着让人以为 AI 坏了。
+        disabled={!wired}
+        aria-disabled={!page}
         title={
           !wired ? "AI 入口没接上（AiPageProvider 未挂载）"
             : page ? `${copy.trigger} · ${page.title}${page.context ? "" : "（本页数据还没取到）"}`
-            : "这一页还没有可聊的内容"
+            : idleNote
         }
         className={cn(
           "ai-chat-trigger fixed right-4 top-2 z-40 inline-flex h-7 items-center gap-1.5 rounded-md px-3",
@@ -138,6 +143,28 @@ export function AiDock({ send, configured, copy, renderReplyActions, renderReply
         <Sparkles className="h-3.5 w-3.5" />
         {copy.trigger}
       </button>
+
+      {open && !page && (
+        <div className="fixed inset-0 z-50 flex justify-end">
+          <div className="absolute inset-0 bg-black/50" onClick={close} />
+          <aside className="ai-surface relative m-3 flex w-full max-w-md flex-col self-start rounded-2xl overflow-hidden">
+            <div className="ai-surface-header flex items-center justify-between gap-2 border-b border-border/60 p-4">
+              <span className="flex min-w-0 items-center gap-2 font-semibold">
+                <Sparkles className="h-4 w-4 shrink-0 text-primary" />
+                <span className="truncate">{copy.panel}</span>
+              </span>
+              <button onClick={close} aria-label="关闭" className="text-muted-foreground hover:text-foreground">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div data-ai-idle-note className="space-y-3 p-4 text-sm">
+              <p className="font-medium">{idleNote}</p>
+              {!idleReason && <p className="text-xs leading-6 text-muted-foreground">等这一页的数据取到之后再问，或者换一页。AI 不会凭一般知识替你编这一页的内容。</p>}
+              <button onClick={close} className="rounded-lg border border-border/60 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground">知道了</button>
+            </div>
+          </aside>
+        </div>
+      )}
 
       {open && page && (
         <div className="fixed inset-0 z-50 flex justify-end">

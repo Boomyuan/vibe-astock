@@ -38,6 +38,9 @@ export interface AiPage {
 interface Store {
   page: AiPage | null;
   set: Dispatch<SetStateAction<AiPage | null>>;
+  /** 这一页为什么不能问（没数据 / 个人数据不提供）。null = 用默认说法 */
+  idle: string | null;
+  setIdle: Dispatch<SetStateAction<string | null>>;
 }
 
 const Ctx = createContext<Store | null>(null);
@@ -61,7 +64,8 @@ const noTake = () => {};
 
 export function AiPageProvider({ children }: { children: ReactNode }) {
   const [page, setPage] = useState<AiPage | null>(null);
-  const value = useMemo<Store>(() => ({ page, set: setPage }), [page]);
+  const [idle, setIdle] = useState<string | null>(null);
+  const value = useMemo<Store>(() => ({ page, set: setPage, idle, setIdle }), [page, idle]);
   const [draft, setDraft] = useState<AiDraft | null>(null);
   const seq = useRef(0);
   const pageKey = page?.key ?? "";
@@ -109,6 +113,28 @@ export function useAiDraftInbox(): [AiDraft | null, (seq: number) => void] {
  */
 export function useAiWired(): boolean {
   return useContext(Ctx) !== null;   // 默认值是 null（createContext<Store | null>(null)），不是 undefined
+}
+
+/**
+ * 这一页**为什么**没有可聊的内容（"数据还没取到" / "个人数据不提供"）。
+ *
+ * 🔴 原来只有一句 hover tooltip，用户根本不会去悬停一个灰按钮 —— 于是"这页不能问"
+ *    和"AI 坏了"在界面上长得一模一样。现在改成：灰按钮**点得动**，点开就说原因。
+ * 传 null / 卸载 = 恢复默认说法。
+ */
+export function useAiPageIdle(reason: string | null): void {
+  const ctx = useContext(Ctx);
+  const setIdle = ctx?.setIdle;
+  useEffect(() => {
+    if (!setIdle) return;
+    setIdle(reason);
+    return () => setIdle(null);
+  }, [setIdle, reason]);
+}
+
+/** 当前这页登记的原因（没登记就是 null，调用方用默认说法） */
+export function useAiIdleReason(): string | null {
+  return useContext(Ctx)?.idle ?? null;
 }
 
 export function useCurrentAiPage(): AiPage | null {
