@@ -76,6 +76,42 @@ def tencent_quotes_map(result: dict, ctx: dict) -> dict:
 
 
 # ---------- 新浪 ----------
+def _frame_rows(result):
+    """DataFrame → (行, attrs)。这里自带一份，免得 CN 映射器为了一个表格助手去依赖 astock 那套。"""
+    cols = [str(c) for c in result.columns]
+    rows = []
+    for rec in result.itertuples(index=False, name=None):
+        rows.append({c: (None if v is None or (isinstance(v, float) and v != v) else v) for c, v in zip(cols, rec)})
+    return rows, dict(getattr(result, "attrs", {}) or {})
+
+
+def sina_kline_cn_map(result, ctx: dict) -> dict:
+    """新浪 A 股 / 北交所 K 线:**不复权**,成交量单位是股。"""
+    rows, attrs = _frame_rows(result)
+    if not rows:
+        return out([], status="failed", reason="新浪 K 线返回 0 根")
+    rows = sorted(rows, key=lambda r: str(r.get("date")))
+    code = str(rows[-1].get("code") or ctx["symbol"])
+    ref = extracted(ctx, {"endpoint": ctx["script"], "rows": rows, "attrs": attrs})
+    last = rows[-1]
+    period = str(ctx["args"].get("period") or "day")
+    note = f"{code} {period};**不复权**;成交量单位股(新浪 A 股 K 线只给不复权)"
+    evs = [ev(ctx, f"kline_close_none", _num(last.get("close")), "元", str(last.get("date")), raw_ref=ref,
+              record_key=f"{code}:{period}:{last.get('date')}", note=note, adjustment="none"),
+           ev(ctx, "kline_open_none", _num(last.get("open")), "元", str(last.get("date")), raw_ref=ref,
+              record_key=f"{code}:{period}:{last.get('date')}:open", note=note, adjustment="none"),
+           ev(ctx, "kline_high_none", _num(last.get("high")), "元", str(last.get("date")), raw_ref=ref,
+              record_key=f"{code}:{period}:{last.get('date')}:high", note=note, adjustment="none"),
+           ev(ctx, "kline_low_none", _num(last.get("low")), "元", str(last.get("date")), raw_ref=ref,
+              record_key=f"{code}:{period}:{last.get('date')}:low", note=note, adjustment="none"),
+           ev(ctx, "kline_volume", _num(last.get("volume")), "股", str(last.get("date")), raw_ref=ref,
+              record_key=f"{code}:{period}:{last.get('date')}:vol", note=note, adjustment="none"),
+           ev(ctx, "kline_points", len(rows), "根", f"{rows[0].get('date')}..{last.get('date')}", raw_ref=ref,
+              record_key=f"{code}:{period}:points", note=f"{code} {period}", adjustment="none")]
+    return out(evs, extra={"code": code, "period": period, "adjust": "none", "rows": len(rows), "last3": rows[-3:],
+                           "volume_unit": "股"})
+
+
 def sina_adjust_factor_map(result: list, ctx: dict) -> dict:
     if not result:
         return empty("新浪无该标的复权因子(不支持的标的返回空 data)")

@@ -51,6 +51,16 @@ def _fake_fetch(calls, *, rows=None, unit="手", factors=None, factor_status="ok
             return {"status": "ok", "fetched_at": "2026-10-26T16:20:00+08:00",
                     "evidence": [{"field": "kline_volume", "unit": "手"}],
                     "extra": {"raw_files": ["raw/extracted_em.json"]}}
+        if endpoint == "sina_kline_cn":
+            (raw / "extracted_sina.json").write_text(json.dumps({"rows": rows if rows is not None else _bj_rows(adjust="none")}))
+            return {"status": "ok", "fetched_at": "2026-10-26T16:35:00+08:00",
+                    "evidence": [{"field": "kline_volume", "unit": "股"}],
+                    "extra": {"raw_files": ["raw/extracted_sina.json"]}}
+        if endpoint == "sina_kline_cn":
+            (raw / "extracted_sina.json").write_text(json.dumps({"rows": rows if rows is not None else _bj_rows(adjust="none")}))
+            return {"status": "ok", "fetched_at": "2026-10-26T16:35:00+08:00",
+                    "evidence": [{"field": "kline_volume", "unit": "股"}],
+                    "extra": {"raw_files": ["raw/extracted_sina.json"]}}
         if endpoint == "sina_adjust_factor":
             data = factors if factors is not None else [{"d": "2026-01-05", "f": "1.0"}, {"d": "1900-01-01", "f": "2.0"}]
             (raw / "f.js").write_text("var qfq=" + json.dumps({"total": len(data), "data": data}))
@@ -117,6 +127,42 @@ def test_beijing_uses_eastmoney_kline_not_tencent(monkeypatch, tmp_path):
     # 成交量：东财给手，换算成股
     assert r["ui_only"]["series"]["volume"][0] == 30000
     assert any("东财" in n and "口径" in n for n in r["notes"]), "两种复权口径不同，图上要说清"
+
+
+def test_beijing_falls_back_to_sina_when_eastmoney_drops(monkeypatch, tmp_path):
+    """东财 push2his 会整段掐连接（实测 RemoteDisconnected）：退到新浪，并如实标「不复权」。"""
+    calls = []
+    fake = _fake_fetch(calls)
+    def flaky(endpoint, symbol, args, out_dir, python, timeout):
+        if endpoint == "em_kline":
+            calls.append((endpoint, symbol, dict(args)))
+            return {"status": "failed", "errors": [{"error": "ConnectionError: RemoteDisconnected"}]}
+        return fake(endpoint, symbol, args, out_dir, python, timeout)
+    monkeypatch.setattr(K, "_run_fetch", flaky)
+    r = K.build({"symbol": "920047", "period": "day", "adjust": "qfq", "charts": True}, tmp_path)
+    assert [c[0] for c in calls] == ["em_kline", "sina_kline_cn"], "东财失败后要退新浪"
+    assert "新浪" in r["source"]
+    assert r["adjust"] == "none" and "不复权" in r["adjust_label"], "新浪只给不复权，不能冒充前复权"
+    assert r["ui_only"]["series"]["volume"][0] == 300, "新浪的成交量本来就是股，不再乘 100"
+    assert any("东财" in n and "没取到" in n for n in r["notes"]), "换源的原因要写在图上"
+
+
+def test_beijing_falls_back_to_sina_when_eastmoney_drops(monkeypatch, tmp_path):
+    """东财 push2his 会整段掐连接（实测 RemoteDisconnected）：退到新浪，并如实标「不复权」。"""
+    calls = []
+    fake = _fake_fetch(calls)
+    def flaky(endpoint, symbol, args, out_dir, python, timeout):
+        if endpoint == "em_kline":
+            calls.append((endpoint, symbol, dict(args)))
+            return {"status": "failed", "errors": [{"error": "ConnectionError: RemoteDisconnected"}]}
+        return fake(endpoint, symbol, args, out_dir, python, timeout)
+    monkeypatch.setattr(K, "_run_fetch", flaky)
+    r = K.build({"symbol": "920047", "period": "day", "adjust": "qfq", "charts": True}, tmp_path)
+    assert [c[0] for c in calls] == ["em_kline", "sina_kline_cn"], "东财失败后要退新浪"
+    assert "新浪" in r["source"]
+    assert r["adjust"] == "none" and "不复权" in r["adjust_label"], "新浪只给不复权，不能冒充前复权"
+    assert r["ui_only"]["series"]["volume"][0] == 300, "新浪的成交量本来就是股，不再乘 100"
+    assert any("东财" in n and "没取到" in n for n in r["notes"]), "换源的原因要写在图上"
 
 
 def test_beijing_still_refuses_a_different_instrument(monkeypatch, tmp_path):

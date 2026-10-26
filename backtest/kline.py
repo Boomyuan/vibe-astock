@@ -84,32 +84,56 @@ def _market_today(market: str) -> date:
 BJ_KLINE_COUNT = {"day": 1200, "week": 400, "month": 200}
 
 
-def _bj_share(code: str, period: str, adjust: str, out_dir: Path) -> Dict[str, Any]:
-    """北交所：走东财 K 线。
-
-    腾讯 K 线对北交所只返回最新一根、baostock 不支持北交所 —— 东财是唯一能给完整历史的源。
-    ⚠️ 复权口径是**东财自己的前复权**，不是沪深那条「新浪因子等比换算」：
-       同一只票在两种口径下的早年价格会有细微差别，所以图上的说明要写清楚是哪种。
-    🔴 成交量东财给的是**手**，这里换算成股（与沪深那条路统一）。
-    """
-    six = bare(code)
-    env = _run_fetch("em_kline", code, {"period": period, "adjust": adjust, "count": BJ_KLINE_COUNT[period]},
-                     out_dir, sys.executable, FETCH_TIMEOUT)
-    _envelope_ok(env, "东财 K 线")
+def _bj_rows(env: Dict[str, Any], out_dir: Path, want: str, source: str) -> List[Dict[str, Any]]:
+    """从信封里取出抽取后的序列表，并核对是不是这一只。"""
     refs = [r for r in (env.get("extra") or {}).get("raw_files") or [] if Path(r).name.startswith("extracted_")]
     if not refs:
-        raise KlineError("东财 K 线信封里没有抽取后的序列文件")
+        raise KlineError(f"{source}信封里没有抽取后的序列文件")
     rows = (_read_raw(out_dir, refs[-1]).get("rows")) or []
-    want = f"bj{six}"
     got = {str(r.get("code") or "") for r in rows}
     if got != {want}:
         raise KlineError(f"要的是 {want}，取回来的是 {sorted(got) or '空'} —— 不是同一只，已中止")
     if not rows:
-        raise KlineError("东财 K 线没返回数据")
-    notes = ["北交所：东财 K 线自带前复权，与沪深那套「新浪因子等比换算」不是同一口径，早年价格会有细微差别"]
-    label = ADJUSTS[adjust] + ("（东财口径）" if adjust != "none" else "")
-    return {"rows": rows, "volume_scale": 100, "source": "东财 K 线", "endpoint": "em_kline",
-            "fetched_at": env.get("fetched_at"), "adjust_label": label, "adjust": adjust, "notes": notes}
+        raise KlineError(f"{source}没返回数据")
+    return rows
+
+
+def _bj_share(code: str, period: str, adjust: str, out_dir: Path) -> Dict[str, Any]:
+    """北交所：**东财优先，挂了退新浪**。
+
+    腾讯 K 线对北交所只返回最新一根、baostock 不支持北交所。
+    - 东财 `em_kline`：完整历史、有前复权、有成交额 —— 首选
+    - 新浪 `sina_kline_cn`：只有**不复权**，但实测更稳
+      （东财 push2his 会整段掐连接：同时段 quote.eastmoney.com 返回 200，是接口级封锁）
+    🔴 两条路的复权口径完全不同，图上的说明必须写清是哪一种。
+    🔴 成交量：东财给手（×100），新浪给股（×1）。
+    """
+    six, want = bare(code), f"bj{bare(code)}"
+    try:
+        env = _run_fetch("em_kline", code, {"period": period, "adjust": adjust, "count": BJ_KLINE_COUNT[period]},
+                         out_dir, sys.executable, FETCH_TIMEOUT)
+        _envelope_ok(env, "东财 K 线")
+        rows = _bj_rows(env, out_dir, want, "东财 K 线")
+        label = ADJUSTS[adjust] + ("（东财口径）" if adjust != "none" else "")
+        return {"rows": rows, "volume_scale": 100, "source": "东财 K 线", "endpoint": "em_kline",
+                "fetched_at": env.get("fetched_at"), "adjust_label": label, "adjust": adjust,
+                "notes": ["北交所：东财 K 线自带前复权，与沪深那套「新浪因子等比换算」不是同一口径，早年价格会有细微差别"]}
+    except (KlineError, LoaderError) as em_err:
+        # 🔴 取数子进程非零退出抛的是 LoaderError（loader._run_fetch），不是 KlineError ——
+        #    只捕 KlineError 的话，东财一挂就直接把错误抛给界面，备用源根本轮不上。
+        # 只留「哪个端点、什么错」：完整堆栈在信封的 errors 里，别把一长串 URL 糊到图上
+        head, _, tail = str(em_err).partition("：")
+        kind = tail.split(":")[0].strip() if tail else ""
+        why = f"{head}：{kind}" if kind else head[:100]
+    env = _run_fetch("sina_kline_cn", code, {"period": period, "count": BJ_KLINE_COUNT[period]},
+                     out_dir, sys.executable, FETCH_TIMEOUT)
+    _envelope_ok(env, "新浪 K 线")
+    rows = _bj_rows(env, out_dir, want, "新浪 K 线")
+    return {"rows": rows, "volume_scale": 1, "source": "新浪 K 线", "endpoint": "sina_kline_cn",
+            "fetched_at": env.get("fetched_at"), "adjust_label": "不复权（东财这次没取到，新浪只给不复权）",
+            "adjust": "none",
+            "notes": [f"东财 K 线这次没取到（{why}），改用新浪：**不复权**，成交量单位股",
+                      "北交所：东财那条有前复权，等它恢复后重新打开这一页就能看到复权价"]}
 
 
 def _a_share(code: str, period: str, adjust: str, out_dir: Path) -> Dict[str, Any]:

@@ -1508,6 +1508,31 @@
       "symbol_param": "code",
       "stages": {},
       "enabled": true,
+      "mapper_module": "mappers_cn",
+      "id": "sina_kline_cn",
+      "title": "新浪 A 股 / 北交所 K 线(日 / 周 / 月,不复权)",
+      "layer": "1 行情",
+      "source": "sina",
+      "module": "sina",
+      "function": "sina_kline_cn",
+      "mapper": "sina_kline_cn_map",
+      "endpoint_label": "CN_MarketDataService.getKLineData",
+      "args": {
+        "period": "day",
+        "count": 800
+      },
+      "sample": "920047",
+      "notes": "period=day/week/month(scale=240/1200/7200);count 最多 3000 根。🔴 **只有不复权**,成交量单位是股。北交所的备用源:东财 push2his 会整段掐连接(实测 RemoteDisconnected),新浪这条实测可用。要前复权仍走 em_kline"
+    },
+    {
+      "market": [
+        "CN"
+      ],
+      "compliance": "cn-public",
+      "symbol_kind": "cn6",
+      "symbol_param": "code",
+      "stages": {},
+      "enabled": true,
       "mapper_module": "mappers_astock",
       "id": "em_kline",
       "title": "东财 K 线(日 / 周 / 月前后复权,含成交额;北交所唯一可用来源)",

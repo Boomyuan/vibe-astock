@@ -264,3 +264,39 @@ def sina_board_flow(board_type: str = "industry") -> dict:
                      "net": _f(x.get("netamount")), "inflow": _f(x.get("inamount")), "outflow": _f(x.get("outamount")), "net_ratio": pct(x.get("ratioamount")),
                      "leader": str(x.get("ts_name") or ""), "leader_pct": pct(x.get("ts_changeratio")), "_raw": ref})
     return {"board_type": board_type, "rows": rows}
+
+# ---------------- A 股 / 北交所 K 线(不复权) ----------------
+_SINA_CN_SCALE = {"day": 240, "week": 1200, "month": 7200}
+
+
+def sina_kline_cn(code: str, period: str = "day", count: int = 800):
+    """新浪 A 股 / 北交所 K 线(日 / 周 / 月),**不复权**,成交量单位是**股**。
+
+    🔴 北交所的备用源:东财 push2his 会整段掐连接(实测 RemoteDisconnected,
+       而同时段 quote.eastmoney.com 返回 200 —— 是接口级封锁,不是断网),
+       新浪这条对 bj920047 的日/周/月都给(scale=240/1200/7200,实测可用)。
+    ⚠️ 只有不复权:北交所要前复权还是走东财;走这条时图上要标「不复权」。
+    """
+    import pandas as pd
+    scale = _SINA_CN_SCALE.get(period)
+    if scale is None:
+        raise ValueError(f"period 只支持 {'/'.join(_SINA_CN_SCALE)}")
+    digits, market = norm_ticker(code, stock_only=True)
+    symbol = f"{market.lower()}{digits}"
+    url = "https://quotes.sina.cn/cn/api/json_v2.php/CN_MarketDataService.getKLineData"
+    d = http_json(url, params={"symbol": symbol, "scale": scale, "datalen": max(1, min(int(count), 3000))},
+                  headers={"Referer": "https://finance.sina.com.cn/"}, timeout=20)
+    if not isinstance(d, list) or not d:
+        raise RuntimeError(f"新浪 K 线返回 0 根({symbol})")
+    rows = [{"date": str(r.get("day") or "")[:10], "open": float(r["open"]), "high": float(r["high"]),
+             "low": float(r["low"]), "close": float(r["close"]), "volume": float(r["volume"])}
+            for r in d if r.get("day") and r.get("close") not in (None, "")]
+    if not rows:
+        raise RuntimeError(f"新浪 K 线没有可用行({symbol})")
+    df = pd.DataFrame(rows)
+    df.insert(0, "code", symbol)
+    df["adjust"] = "none"
+    df["source"] = "sina"
+    df.attrs["period"] = period
+    df.attrs["volume_unit"] = "股"
+    return df
